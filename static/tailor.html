@@ -17,7 +17,10 @@
       <label for="company">Company (optional, auto-detected from the JD)</label>
       <input id="company" type="text" placeholder="e.g. Google">
       <div style="height:12px"></div>
-      <label for="jd">Job description</label>
+      <div class="row" style="justify-content:space-between;margin-bottom:4px">
+        <label for="jd" style="margin:0">Job description</label>
+        <label class="btn small" style="margin:0" id="jd-upload-label">Load from PDF / .txt<input id="jd-upload" type="file" accept=".pdf,.txt,application/pdf,text/plain" hidden></label>
+      </div>
       <textarea id="jd" class="jd" placeholder="Paste the full job description here…"></textarea>
       <div class="row" style="margin-top:12px">
         <button id="go" class="primary">Tailor my resume</button>
@@ -65,6 +68,20 @@ $("#go").onclick = async () => {
     $("#status").textContent = "";
     btn.disabled = false;
   } finally { clearInterval(timer); }
+};
+
+$("#jd-upload").onchange = async (ev) => {
+  const f = ev.target.files[0]; if (!f) return;
+  const label = $("#jd-upload-label");
+  label.firstChild.textContent = "Reading…";
+  const fd = new FormData(); fd.append("file", f);
+  try {
+    const { text } = await api("/api/jd/extract", { method: "POST", body: fd });
+    $("#jd").value = text;
+    showBanner(banner, "ok", `Loaded the job description from ${f.name}. Check the text, then click Tailor.`);
+  } catch (e) { showBanner(banner, "error", e.message); }
+  label.firstChild.textContent = "Load from PDF / .txt";
+  ev.target.value = "";
 };
 
 loadRuns();

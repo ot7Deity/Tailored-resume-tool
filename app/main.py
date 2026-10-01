@@ -3,7 +3,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import compiler, config, pipeline, storage
+from . import compiler, config, pdf_import, pipeline, storage
 from .llm import LLMError
 from .tex_parser import parse_resume
 
@@ -51,9 +51,22 @@ def put_master(body: MasterIn):
     return _master_summary(body.tex)
 
 
+def _is_pdf(file: UploadFile, raw: bytes) -> bool:
+    return raw.startswith(b"%PDF") or (file.filename or "").lower().endswith(".pdf")
+
+
 @app.post("/api/master/upload")
-async def upload_master(file: UploadFile = File(...)):
-    raw = await file.read()
+def upload_master(file: UploadFile = File(...)):
+    raw = file.file.read()
+    if _is_pdf(file, raw):
+        # Convert to LaTeX but don't save: the user reviews it in the editor first.
+        try:
+            tex = pdf_import.resume_pdf_to_latex(raw)
+        except pdf_import.PDFError as e:
+            raise HTTPException(400, str(e))
+        except LLMError as e:
+            raise HTTPException(502, str(e))
+        return _master_summary(tex) | {"unsaved": True, "converted_from_pdf": True}
     try:
         tex = raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -118,6 +131,22 @@ def tailor(body: TailorIn):
     try:
         return pipeline.run_tailor(body.jd, body.company)
     except ValueError as e:
+        raise HTTPException(400, str(e))
+    except LLMError as e:
+        raise HTTPException(502, str(e))
+
+
+@app.post("/api/jd/extract")
+def extract_jd(file: UploadFile = File(...)):
+    raw = file.file.read()
+    if not _is_pdf(file, raw):
+        try:
+            return {"text": raw.decode("utf-8")}
+        except UnicodeDecodeError:
+            raise HTTPException(400, "Upload a PDF or a plain-text file.")
+    try:
+        return {"text": pdf_import.extract_jd_text(raw)}
+    except pdf_import.PDFError as e:
         raise HTTPException(400, str(e))
     except LLMError as e:
         raise HTTPException(502, str(e))

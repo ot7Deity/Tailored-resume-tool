@@ -18,7 +18,7 @@
         <div class="row" style="justify-content: space-between; margin-bottom: 12px;">
           <h2 style="margin:0">LaTeX source</h2>
           <div class="row">
-            <label class="btn" style="margin:0">Upload .tex<input id="upload" type="file" accept=".tex" hidden></label>
+            <label class="btn" style="margin:0" id="upload-label">Upload .tex or PDF<input id="upload" type="file" accept=".tex,.pdf,application/pdf" hidden></label>
             <button id="preview-btn">Compile preview</button>
             <button id="save" class="primary">Save master</button>
           </div>
@@ -94,10 +94,23 @@ $("#save").onclick = async () => {
 $("#upload").onchange = async (ev) => {
   const f = ev.target.files[0]; if (!f) return;
   const fd = new FormData(); fd.append("file", f);
+  const isPdf = f.name.toLowerCase().endsWith(".pdf");
+  const label = $("#upload-label");
+  if (isPdf) {
+    showBanner(banner, "warn", `Converting ${f.name} to LaTeX with Claude… this can take a minute.`);
+    label.firstChild.textContent = "Converting…";
+  }
   try {
-    render(await api("/api/master/upload", { method: "POST", body: fd }));
-    showBanner(banner, "ok", `Uploaded ${f.name} as your master resume.`);
+    const m = await api("/api/master/upload", { method: "POST", body: fd });
+    render(m);
+    if (m.unsaved) {
+      showBanner(banner, "warn", `Converted ${f.name} to LaTeX (Jake's template). Review the text and the detected bullets, ` +
+        `use “Save master” to keep it, then “Compile preview” to check the PDF. Nothing is saved until you do.`);
+    } else {
+      showBanner(banner, "ok", `Uploaded ${f.name} as your master resume.`);
+    }
   } catch (e) { showBanner(banner, "error", e.message); }
+  label.firstChild.textContent = "Upload .tex or PDF";
   ev.target.value = "";
 };
 
