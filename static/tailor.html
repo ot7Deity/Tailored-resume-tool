@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tailor Resume</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main>
+  <h1>Tailor to a job</h1>
+  <p class="sub">Paste the job description. Claude rewrites only the few bullets that matter most (XYZ format), then you review everything before downloading.</p>
+  <div id="banner" class="hidden"></div>
+
+  <div class="grid2">
+    <div class="card">
+      <label for="company">Company (optional, auto-detected from the JD)</label>
+      <input id="company" type="text" placeholder="e.g. Google">
+      <div style="height:12px"></div>
+      <label for="jd">Job description</label>
+      <textarea id="jd" class="jd" placeholder="Paste the full job description here…"></textarea>
+      <div class="row" style="margin-top:12px">
+        <button id="go" class="primary">Tailor my resume</button>
+        <span id="status" class="muted small"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Recent tailored resumes</h2>
+      <ul class="plain" id="runs"><li class="muted">None yet.</li></ul>
+    </div>
+  </div>
+</main>
+<script src="app.js"></script>
+<script>
+nav("tailor.html");
+const banner = $("#banner");
+
+async function loadRuns() {
+  const runs = await api("/api/runs").catch(() => []);
+  if (!runs.length) return;
+  $("#runs").innerHTML = runs.map(r => {
+    const d = (r.score_tailored - r.score_master).toFixed(1);
+    return `<li><a href="preview.html?run=${r.run_id}">${esc(r.company)} — ${esc(r.role)}</a>
+      <span class="muted small"> · ${esc(r.created.replace("T", " "))}</span><br>
+      <span class="small">Score ${r.score_master} → ${r.score_tailored}
+      <span class="pill ${d >= 0 ? "good" : "bad"}">${d >= 0 ? "+" : ""}${d}</span></span></li>`;
+  }).join("");
+}
+
+$("#go").onclick = async () => {
+  const jd = $("#jd").value.trim();
+  if (jd.length < 50) { showBanner(banner, "error", "Paste the full job description first."); return; }
+  const btn = $("#go"); btn.disabled = true;
+  const steps = ["Analyzing the job description…", "Scoring your master resume…",
+                 "Rewriting the most relevant bullets (XYZ format)…", "Compiling the PDF…", "Explaining the score difference…"];
+  let i = 0;
+  $("#status").innerHTML = `<span class="spinner"></span> ${steps[0]}`;
+  const timer = setInterval(() => { i = Math.min(i + 1, steps.length - 1); $("#status").innerHTML = `<span class="spinner"></span> ${steps[i]}`; }, 12000);
+  try {
+    const run = await api("/api/tailor", { method: "POST", body: { jd, company: $("#company").value } });
+    location.href = `preview.html?run=${run.run_id}`;
+  } catch (e) {
+    showBanner(banner, "error", e.message);
+    $("#status").textContent = "";
+    btn.disabled = false;
+  } finally { clearInterval(timer); }
+};
+
+loadRuns();
+</script>
+</body>
+</html>

@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Master Resume</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main>
+  <h1>Master resume</h1>
+  <p class="sub">Your source of truth. Every tailored version starts from this file and changes only a few bullets.</p>
+  <div id="banner" class="hidden"></div>
+
+  <div class="grid2">
+    <div>
+      <div class="card">
+        <div class="row" style="justify-content: space-between; margin-bottom: 12px;">
+          <h2 style="margin:0">LaTeX source</h2>
+          <div class="row">
+            <label class="btn" style="margin:0">Upload .tex<input id="upload" type="file" accept=".tex" hidden></label>
+            <button id="preview-btn">Compile preview</button>
+            <button id="save" class="primary">Save master</button>
+          </div>
+        </div>
+        <textarea id="tex" class="code" spellcheck="false" placeholder="Paste your full .tex resume here, or upload the file."></textarea>
+        <p class="small muted" id="backups"></p>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>Name used in the filename</h2>
+        <div class="row">
+          <div style="flex:1"><label>First name</label><input id="first" type="text"></div>
+          <div style="flex:1"><label>Last name</label><input id="last" type="text"></div>
+          <button id="save-name" style="align-self:flex-end">Save</button>
+        </div>
+        <p class="small muted" id="detected"></p>
+      </div>
+
+      <div class="card">
+        <h2>What the tailoring can edit</h2>
+        <p class="small muted">Check that your bullets and skills lines were detected. Anything not listed here is never touched.</p>
+        <h2 class="small" id="bullet-count" style="margin-top:12px">Bullets</h2>
+        <ul class="plain" id="bullets"></ul>
+        <h2 class="small" id="skill-count" style="margin-top:16px">Skills lines</h2>
+        <ul class="plain" id="skills"></ul>
+      </div>
+
+      <div class="card hidden" id="pdf-card">
+        <h2>Compiled preview</h2>
+        <iframe id="pdf" class="pdf-frame" title="Master PDF"></iframe>
+      </div>
+    </div>
+  </div>
+</main>
+<script src="app.js"></script>
+<script>
+nav("index.html");
+const banner = $("#banner");
+
+function render(m) {
+  $("#tex").value = m.tex || "";
+  if (!m.exists) {
+    showBanner(banner, "warn", "No master resume yet. Paste or upload your .tex file, then Save.");
+    $("#bullets").innerHTML = ""; $("#skills").innerHTML = "";
+    return;
+  }
+  $("#first").value = m.name.first; $("#last").value = m.name.last;
+  $("#detected").textContent = `Detected in .tex: ${m.detected_name.first} ${m.detected_name.last}`;
+  $("#bullet-count").textContent = `Bullets (${m.bullets.length})`;
+  $("#skill-count").textContent = `Skills lines (${m.skills.length})`;
+  $("#bullets").innerHTML = m.bullets.map(b =>
+    `<li><span class="tag">${b.id}</span><span class="pill info">${esc(b.section)}</span> ${esc(b.text)}</li>`).join("");
+  $("#skills").innerHTML = m.skills.map(s =>
+    `<li><span class="tag">${s.id}</span><b>${esc(s.label)}:</b> ${esc(s.text)}</li>`).join("") ||
+    `<li class="muted">No skills section detected.</li>`;
+  $("#backups").textContent = m.backups.length ? `${m.backups.length} backup(s) kept in data/backups (latest: ${m.backups[0]})` : "";
+  if (!m.tectonic) showBanner(banner, "warn", "Tectonic was not found, so PDFs can't be compiled. See README → Setup.");
+}
+
+async function load() {
+  try { render(await api("/api/master")); } catch (e) { showBanner(banner, "error", e.message); }
+}
+
+$("#save").onclick = async () => {
+  try {
+    render(await api("/api/master", { method: "PUT", body: { tex: $("#tex").value } }));
+    showBanner(banner, "ok", "Master saved (previous version backed up).");
+  } catch (e) { showBanner(banner, "error", e.message); }
+};
+
+$("#upload").onchange = async (ev) => {
+  const f = ev.target.files[0]; if (!f) return;
+  const fd = new FormData(); fd.append("file", f);
+  try {
+    render(await api("/api/master/upload", { method: "POST", body: fd }));
+    showBanner(banner, "ok", `Uploaded ${f.name} as your master resume.`);
+  } catch (e) { showBanner(banner, "error", e.message); }
+  ev.target.value = "";
+};
+
+$("#save-name").onclick = async () => {
+  try {
+    render(await api("/api/profile", { method: "PUT", body: { first_name: $("#first").value, last_name: $("#last").value } }));
+    showBanner(banner, "ok", "Name saved.");
+  } catch (e) { showBanner(banner, "error", e.message); }
+};
+
+$("#preview-btn").onclick = async () => {
+  const btn = $("#preview-btn"); btn.disabled = true; btn.textContent = "Compiling…";
+  try {
+    const res = await fetch("/api/master/pdf");
+    if (!res.ok) throw new Error((await res.json()).detail);
+    $("#pdf").src = URL.createObjectURL(await res.blob());
+    $("#pdf-card").classList.remove("hidden");
+  } catch (e) { showBanner(banner, "error", "Compile failed:\n" + e.message); }
+  btn.disabled = false; btn.textContent = "Compile preview";
+};
+
+load();
+</script>
+</body>
+</html>

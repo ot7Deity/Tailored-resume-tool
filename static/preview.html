@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Resume Preview</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main>
+  <h1 id="title">Preview</h1>
+  <p class="sub" id="summary"></p>
+  <div id="banner" class="hidden"></div>
+
+  <!-- Scores -->
+  <div class="card">
+    <h2>ATS match score vs. this job description</h2>
+    <div class="scores">
+      <div class="score-card" id="card-master"></div>
+      <div class="score-card" id="card-delta"></div>
+      <div class="score-card" id="card-tailored"></div>
+    </div>
+    <p class="small muted" style="margin:12px 0 0">Both versions are scored with the same method: keyword coverage (60%), must-have hard skills (20%), bullet quality — metrics, action verbs, XYZ structure (20%).</p>
+  </div>
+
+  <!-- Why -->
+  <div class="grid2">
+    <div class="card">
+      <div class="row" style="justify-content:space-between"><h2 style="margin:0">Why the scores differ</h2>
+        <button id="refresh-explain" class="small">Refresh AI analysis</button></div>
+      <div id="ai-explain" style="margin-top:12px"></div>
+      <h2 class="small" style="margin-top:16px">Score breakdown</h2>
+      <ul id="reasons" class="small" style="padding-left:18px;margin:0"></ul>
+    </div>
+    <div class="card">
+      <h2>JD keywords</h2>
+      <div id="keywords" class="small"></div>
+    </div>
+  </div>
+
+  <!-- Changes -->
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">Changes from your master</h2>
+      <span class="small" id="change-label"></span>
+    </div>
+    <div class="meter" id="meter" style="margin:10px 0 16px"><span></span></div>
+    <div id="changes"></div>
+    <div id="skills-changes"></div>
+  </div>
+
+  <!-- PDF -->
+  <div class="card">
+    <div class="row" style="justify-content:space-between"><h2 style="margin:0">Tailored PDF</h2><span id="compile-status" class="small"></span></div>
+    <div style="height:12px"></div>
+    <iframe id="pdf" class="pdf-frame" title="Tailored resume PDF"></iframe>
+    <pre id="compile-log" class="small hidden" style="white-space:pre-wrap;background:#fafbfc;padding:10px;border-radius:8px"></pre>
+  </div>
+
+  <div class="sticky-actions">
+    <div><label>Company</label><input id="company" type="text" style="width:200px"></div>
+    <div style="flex:1;min-width:260px"><label>File name</label><input id="filename" type="text"></div>
+    <button id="apply">Apply my changes</button>
+    <a id="download" class="btn primary">Download PDF</a>
+    <a id="download-tex" class="btn">.tex</a>
+  </div>
+</main>
+<script src="app.js"></script>
+<script>
+nav("");
+const banner = $("#banner");
+const runId = new URLSearchParams(location.search).get("run");
+let run = null, dirty = false;
+
+const LABELS = { keyword_coverage: "Keyword coverage", hard_skill_match: "Must-have hard skills", bullet_quality: "Bullet quality" };
+
+function scoreCard(title, s, cls, win) {
+  const rows = Object.entries(LABELS).map(([k, label]) => `
+    <div class="metric-row"><span>${label}</span><span>${s.breakdown[k]}</span></div>
+    <div class="bar ${cls}"><span style="width:${s.breakdown[k]}%"></span></div>`).join("");
+  return `<div class="row" style="justify-content:space-between"><b>${title}</b>${win ? '<span class="pill good">Better match</span>' : ""}</div>
+    <div class="num">${s.overall}<small> / 100</small></div>${rows}`;
+}
+
+function render() {
+  $("#title").textContent = `${run.company} — ${run.role}`;
+  $("#summary").textContent = run.summary;
+  const { master, tailored } = run.scores, cmp = run.comparison;
+  $("#card-master").innerHTML = scoreCard("Master resume", master, "master", cmp.winner === "master");
+  $("#card-tailored").innerHTML = scoreCard("Tailored resume", tailored, "", cmp.winner === "tailored");
+  $("#card-master").classList.toggle("win", cmp.winner === "master");
+  $("#card-tailored").classList.toggle("win", cmp.winner === "tailored");
+  const verdict = { tailored: "The tailored resume aligns better with this job.",
+                    master: "Your master resume aligns better — consider rejecting some changes.",
+                    tie: "Both versions align about equally." }[cmp.winner];
+  $("#card-delta").innerHTML = `<b>Difference</b>
+    <div class="delta ${cmp.delta > 0 ? "up" : cmp.delta < 0 ? "down" : ""}">${cmp.delta > 0 ? "+" : ""}${cmp.delta}</div>
+    <p style="margin:6px 0 10px">${verdict}</p>
+    <div class="small muted">${cmp.gained.length} keyword(s) gained · ${cmp.lost.length} lost · ${cmp.still_missing.length} still missing</div>`;
+
+  // AI explanation
+  const ex = run.explanation;
+  let html = "";
+  if (run.explanation_stale) html += `<div class="banner warn small">You changed the edits since this analysis was written. Scores above are current; click “Refresh AI analysis” to update the text.</div>`;
+  if (ex) {
+    html += `<p style="margin:0 0 8px"><b>${esc(ex.headline)}</b></p>
+      <ul style="padding-left:18px;margin:0 0 10px">${ex.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>
+      ${ex.advice.length ? `<b class="small">Suggestions</b><ul class="small" style="padding-left:18px;margin:4px 0 0">${ex.advice.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}`;
+  } else if (run.explanation_error) {
+    html += `<p class="small muted">AI analysis unavailable: ${esc(run.explanation_error)}</p>`;
+  }
+  $("#ai-explain").innerHTML = html;
+  $("#reasons").innerHTML = cmp.reasons.map(r => `<li>${esc(r)}</li>`).join("");
+
+  // keywords
+  const tm = new Set(tailored.matched), mm = new Set(master.matched);
+  const byImp = [...run.keywords].sort((a, b) => b.importance - a.importance);
+  $("#keywords").innerHTML = `<p class="muted" style="margin-top:0">
+      <span class="pill good">in both</span> <span class="pill info">added by tailoring</span> <span class="pill bad">missing</span> · ★ = must-have</p>` +
+    byImp.map(k => {
+      const cls = mm.has(k.term) && tm.has(k.term) ? "good" : tm.has(k.term) ? "info" : "bad";
+      return `<span class="pill ${cls}" style="margin:0 4px 6px 0">${k.importance >= 3 ? "★ " : ""}${esc(k.term)}</span>`;
+    }).join("");
+
+  // change meter
+  const ratio = run.change_ratio, max = run.max_change_ratio;
+  $("#change-label").innerHTML = `${run.bullets_changed} of ${run.bullet_count} bullets rewritten · <b>${(ratio * 100).toFixed(1)}%</b> of words changed (target ≤ ${(max * 100).toFixed(0)}%)`;
+  $("#meter").classList.toggle("over", ratio > max);
+  $("#meter span").style.width = Math.min(100, ratio / max * 100) + "%";
+
+  // bullet edits
+  $("#changes").innerHTML = run.edits.map((e, i) => `
+    <div class="change ${e.accepted ? "" : "rejected"}" data-i="${i}">
+      <div class="row" style="justify-content:space-between">
+        <div class="row" style="gap:6px"><span class="tag">${e.bullet_id}</span><span class="pill info">${esc(e.section)}</span>
+          ${e.metric_estimated ? `<span class="pill warn" title="Claude estimated these numbers — verify or replace them">⚠ Estimated metric: ${esc(e.estimated_metrics.join(", ") || "yes")}</span>` : ""}
+          ${e.user_edited ? '<span class="pill good">edited by you</span>' : ""}
+          ${e.dropped_reason ? `<span class="pill bad">${esc(e.dropped_reason)}</span>` : ""}</div>
+        <label class="switch"><input type="checkbox" class="accept" ${e.accepted ? "checked" : ""}> Use this change</label>
+      </div>
+      <div class="old">${esc(e.original_text)}</div>
+      <textarea class="new">${esc(e.new_text)}</textarea>
+      <div class="xyz"><b>X</b><span>${esc(e.xyz.x_accomplished)}</span><b>Y</b><span>${esc(e.xyz.y_measured_by)}</span><b>Z</b><span>${esc(e.xyz.z_by_doing)}</span></div>
+      <div class="meta">Keywords: ${e.keywords_added.map(k => `<mark class="kw">${esc(k)}</mark>`).join(" ") || "—"} · ${esc(e.reason)}</div>
+    </div>`).join("") || `<p class="muted">No bullet changes were suggested — your master already matches well.</p>`;
+
+  $("#skills-changes").innerHTML = run.skills_edits.length ? `<h2 class="small" style="margin-top:16px">Skills additions</h2>` +
+    run.skills_edits.map((s, i) => `
+    <div class="change ${s.accepted ? "" : "rejected"}" data-s="${i}">
+      <div class="row" style="justify-content:space-between">
+        <span><b>${esc(s.label)}:</b> ${esc(s.original_text)}, ${s.add_keywords.map(k => `<mark class="kw">${esc(k)}</mark>`).join(", ")}</span>
+        <label class="switch"><input type="checkbox" class="accept-skill" ${s.accepted ? "checked" : ""}> Add these</label>
+      </div>
+      <div class="meta">${esc(s.reason)} · Only keep skills you actually have.</div>
+    </div>`).join("") : "";
+
+  // pdf
+  const c = run.compile;
+  if (c.ok) {
+    $("#pdf").src = `/api/runs/${runId}/pdf?t=${Date.now()}`;
+    $("#pdf").classList.remove("hidden"); $("#compile-log").classList.add("hidden");
+    $("#compile-status").innerHTML = '<span class="pill good">Compiled</span>';
+  } else {
+    $("#pdf").classList.add("hidden");
+    $("#compile-log").textContent = c.log; $("#compile-log").classList.remove("hidden");
+    $("#compile-status").innerHTML = '<span class="pill bad">Compile failed</span>';
+  }
+  $("#company").value = run.company;
+  $("#filename").value = run.filename;
+  $("#download").href = `/api/runs/${runId}/download`;
+  $("#download").classList.toggle("hidden", !c.ok);
+  $("#download-tex").href = `/api/runs/${runId}/tex`;
+  setDirty(false);
+}
+
+function setDirty(v) {
+  dirty = v;
+  $("#apply").classList.toggle("primary", v);
+  $("#apply").textContent = v ? "Apply changes & recompile" : "Apply my changes";
+}
+
+document.addEventListener("input", (ev) => {
+  if (ev.target.matches(".new, .accept, .accept-skill, #company, #filename")) setDirty(true);
+  if (ev.target.matches(".accept, .accept-skill")) ev.target.closest(".change").classList.toggle("rejected", !ev.target.checked);
+  if (ev.target.id === "company" && run) {
+    $("#filename").value = run.filename.replace(/^([^_]*_[^_]*_)[^_]*(_[^_]*\.pdf)$/i, `$1${ev.target.value.replace(/[^A-Za-z0-9]/g, "")}$2`);
+  }
+});
+
+$("#apply").onclick = async () => {
+  const btn = $("#apply"); btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Recompiling…';
+  const edits = [...document.querySelectorAll("[data-i]")].map(el => ({
+    bullet_id: run.edits[el.dataset.i].bullet_id, accepted: $(".accept", el).checked, new_text: $(".new", el).value }));
+  const skills = [...document.querySelectorAll("[data-s]")].map(el => ({
+    line_id: run.skills_edits[el.dataset.s].line_id, accepted: $(".accept-skill", el).checked }));
+  try {
+    run = await api(`/api/runs/${runId}/apply`, { method: "POST",
+      body: { edits, skills, company: $("#company").value, filename: $("#filename").value } });
+    render();
+    showBanner(banner, "ok", "Changes applied. Scores and PDF updated.");
+  } catch (e) { showBanner(banner, "error", e.message); }
+  btn.disabled = false;
+};
+
+$("#download").onclick = (ev) => {
+  if (dirty && !confirm("You have unapplied changes. Download the last compiled version anyway?")) ev.preventDefault();
+};
+
+$("#refresh-explain").onclick = async () => {
+  const btn = $("#refresh-explain"); btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Analyzing…';
+  try { run = await api(`/api/runs/${runId}/explain`, { method: "POST" }); render(); }
+  catch (e) { showBanner(banner, "error", e.message); }
+  btn.disabled = false; btn.textContent = "Refresh AI analysis";
+};
+
+(async () => {
+  if (!runId) { showBanner(banner, "error", "No run selected. Start from “Tailor to a job”."); return; }
+  try { run = await api(`/api/runs/${runId}`); render(); }
+  catch (e) { showBanner(banner, "error", e.message); }
+})();
+</script>
+</body>
+</html>
