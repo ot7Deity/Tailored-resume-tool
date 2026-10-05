@@ -79,5 +79,8 @@ mark.kw { background: #fff1b8; padding: 0 2px; border-radius: 3px; }
 .spinner { width: 18px; height: 18px; border: 3px solid var(--accent-soft); border-top-color: var(--accent);
   border-radius: 50%; animation: spin .8s linear infinite; display: inline-block; vertical-align: middle; }
 @keyframes spin { to { transform: rotate(360deg); } }
+.drop-overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+  background: rgba(47, 91, 234, .12); border: 3px dashed var(--accent); color: var(--accent);
+  font-size: 22px; font-weight: 700; pointer-events: none; }
 .sticky-actions { position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--border);
   padding: 12px 20px; margin: 0 -24px -24px; display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }

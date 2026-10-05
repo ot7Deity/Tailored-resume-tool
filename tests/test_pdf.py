@@ -50,3 +50,31 @@ def test_master_pdf_upload_converts_without_saving(client, tmp_path, monkeypatch
     assert len(body["bullets"]) == 20
     assert calls[0][0]["type"] == "document"  # the PDF is sent to Claude as a document block
     assert not (tmp_path / "master.tex").exists()  # user must review + save first
+
+
+def test_same_pdf_upload_is_cached(client, tmp_path, monkeypatch):
+    calls = []
+
+    def fake_text(system, content, effort="medium", max_tokens=64000):
+        calls.append(content)
+        return SAMPLE
+
+    monkeypatch.setattr(llm, "call_text", fake_text)
+    first = client.post("/api/master/upload", files={"file": ("resume.pdf", PDF, "application/pdf")}).json()
+    second = client.post("/api/master/upload", files={"file": ("again.pdf", PDF, "application/pdf")}).json()
+    assert len(calls) == 1  # second upload of the identical file makes no API call
+    assert first["cached"] is False and second["cached"] is True
+    assert second["tex"] == first["tex"]
+    # a different file is converted fresh
+    client.post("/api/master/upload", files={"file": ("other.pdf", PDF + b"\n%changed", "application/pdf")})
+    assert len(calls) == 2
+
+
+def test_scanned_jd_transcription_is_cached(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(pdf_import, "extract_text", lambda data: "")  # pretend it's a scan
+    monkeypatch.setattr(llm, "call_text", lambda *a, **k: calls.append(1) or "We are hiring a Swift intern at Apple.")
+    for _ in range(2):
+        r = client.post("/api/jd/extract", files={"file": ("jd.pdf", PDF, "application/pdf")})
+        assert r.json()["text"] == "We are hiring a Swift intern at Apple."
+    assert len(calls) == 1

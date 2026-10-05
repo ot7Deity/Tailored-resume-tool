@@ -1,10 +1,13 @@
+from datetime import datetime
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import compiler, config, pdf_import, pipeline, storage
+from . import compiler, config, one_page, pdf_import, pipeline, storage
 from .llm import LLMError
+from .tailor import detect_grad_date
 from .tex_parser import parse_resume
 
 app = FastAPI(title="Tailored Resume Tool")
@@ -26,6 +29,10 @@ def _master_summary(tex: str | None) -> dict:
         "skills": [{"id": s.id, "label": s.label, "text": s.text} for s in parsed.skills],
         "backups": storage.list_backups()[:10],
         "tectonic": bool(compiler.find_tectonic()),
+        "grad_dates": config.GRAD_DATES,
+        "detected_grad_date": detect_grad_date(tex),
+        "saved_at": (datetime.fromtimestamp(storage.master_path().stat().st_mtime).isoformat(timespec="seconds")
+                     if storage.master_path().exists() else None),
     }
 
 
@@ -60,13 +67,18 @@ def upload_master(file: UploadFile = File(...)):
     raw = file.file.read()
     if _is_pdf(file, raw):
         # Convert to LaTeX but don't save: the user reviews it in the editor first.
-        try:
-            tex = pdf_import.resume_pdf_to_latex(raw)
-        except pdf_import.PDFError as e:
-            raise HTTPException(400, str(e))
-        except LLMError as e:
-            raise HTTPException(502, str(e))
-        return _master_summary(tex) | {"unsaved": True, "converted_from_pdf": True}
+        # The same PDF uploaded again is served from cache, with no API call.
+        tex = storage.cache_get("resume_tex", raw)
+        cached = tex is not None
+        if not cached:
+            try:
+                tex = pdf_import.resume_pdf_to_latex(raw)
+            except pdf_import.PDFError as e:
+                raise HTTPException(400, str(e))
+            except LLMError as e:
+                raise HTTPException(502, str(e))
+            storage.cache_put("resume_tex", raw, tex)
+        return _master_summary(tex) | {"unsaved": True, "converted_from_pdf": True, "cached": cached}
     try:
         tex = raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -93,10 +105,10 @@ def master_pdf():
     tex = storage.read_master()
     if not tex:
         raise HTTPException(404, "No master resume saved")
-    result = compiler.compile_tex(tex, storage.assets_dir())
+    result = one_page.fit_to_one_page(tex, storage.assets_dir())
     if not result.ok:
         raise HTTPException(422, result.log)
-    return Response(result.pdf, media_type="application/pdf")
+    return Response(result.pdf, media_type="application/pdf", headers={"X-Fit-Note": result.fit_note})
 
 
 # ---------- tailoring ----------
@@ -104,6 +116,7 @@ def master_pdf():
 class TailorIn(BaseModel):
     jd: str
     company: str = ""
+    grad_date: str = ""
 
 
 class EditToggle(BaseModel):
@@ -122,6 +135,7 @@ class ApplyIn(BaseModel):
     skills: list[SkillToggle] = []
     company: str | None = None
     filename: str | None = None
+    grad_date: str | None = None
 
 
 @app.post("/api/tailor")
@@ -129,7 +143,7 @@ def tailor(body: TailorIn):
     if len(body.jd.strip()) < 50:
         raise HTTPException(400, "Paste the full job description.")
     try:
-        return pipeline.run_tailor(body.jd, body.company)
+        return _out(pipeline.run_tailor(body.jd, body.company, body.grad_date))
     except ValueError as e:
         raise HTTPException(400, str(e))
     except LLMError as e:
@@ -164,22 +178,31 @@ def _load(run_id: str) -> dict:
         raise HTTPException(404, "Run not found")
 
 
+def _out(run: dict) -> dict:
+    """A run as sent to the preview page (with the graduation-date choices)."""
+    return run | {"grad_dates": config.GRAD_DATES}
+
+
 @app.get("/api/runs/{run_id}")
 def get_run(run_id: str):
-    return _load(run_id)
+    return _out(_load(run_id))
 
 
 @app.post("/api/runs/{run_id}/apply")
 def apply(run_id: str, body: ApplyIn):
     _load(run_id)
-    return pipeline.apply_changes(run_id, [e.model_dump() for e in body.edits],
-                                  [s.model_dump() for s in body.skills], body.company, body.filename)
+    try:
+        return _out(pipeline.apply_changes(run_id, [e.model_dump() for e in body.edits],
+                                           [s.model_dump() for s in body.skills], body.company, body.filename,
+                                           body.grad_date))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.post("/api/runs/{run_id}/explain")
 def explain(run_id: str):
     _load(run_id)
-    return pipeline.refresh_explanation(run_id)
+    return _out(pipeline.refresh_explanation(run_id))
 
 
 @app.get("/api/runs/{run_id}/pdf")

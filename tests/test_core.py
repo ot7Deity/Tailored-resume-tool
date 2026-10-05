@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from app import config, tailor
-from app.compiler import build_filename, xetex_compat
+from app.compiler import build_filename, term_for, xetex_compat
 from app.latex_utils import escape_latex, latex_to_text
 from app.scorer import score_resume
 from app.tex_parser import parse_resume
@@ -74,14 +74,30 @@ def test_escape_latex():
 
 
 def test_budget_caps_edits(parsed):
-    edits, skills = tailor.enforce_budget(parsed, make_plan(6))
+    edits, skills = tailor.enforce_budget(parsed, make_plan(20))
     accepted = [e for e in edits if e["accepted"]]
-    assert len(accepted) == 2  # ceil(20 * 10%)
+    assert 0 < len(accepted) <= tailor.max_edits_for(parsed) < 20
+    assert any(not e["accepted"] for e in edits)
     assert all(e["dropped_reason"] for e in edits if not e["accepted"])
     # "Git" already listed on the line -> not re-added
     assert skills[0]["add_keywords"] == ["Kubernetes"]
-    ratio = tailor.change_ratio(parsed, {e["bullet_id"]: e["new_text"] for e in accepted}, {})
+    ratio = tailor.change_ratio(parsed, {e["bullet_id"]: e["new_text"] for e in accepted})
     assert ratio <= config.MAX_CHANGE_RATIO
+
+
+def test_skill_adds_dont_use_word_budget(parsed, monkeypatch):
+    monkeypatch.setattr(config, "MAX_CHANGE_RATIO", 0.0)  # no word budget at all
+    _, skills = tailor.enforce_budget(parsed, make_plan(0))
+    assert skills[0]["add_keywords"] == ["Kubernetes"]
+    assert tailor.change_ratio(parsed, {}) == 0
+
+
+def test_skill_adds_capped(parsed, monkeypatch):
+    monkeypatch.setattr(config, "MAX_SKILL_ADDS", 2)
+    plan = tailor.TailorPlan(edits=[], skills_edits=[
+        tailor.SkillsEdit(line_id="s3", add_keywords=["Kubernetes", "Docker Swarm", "Terraform"], reason="r")])
+    _, skills = tailor.enforce_budget(parsed, plan)
+    assert skills[0]["add_keywords"] == ["Kubernetes", "Docker Swarm"]
 
 
 def test_budget_ignores_unknown_and_duplicate_ids(parsed):
@@ -93,8 +109,10 @@ def test_budget_ignores_unknown_and_duplicate_ids(parsed):
 
 
 def test_filename():
-    assert build_filename("Jake", "Ryan", "Goldman Sachs") == "Ryan_Jake_GoldmanSachs_Spring2028.pdf"
-    assert build_filename("Mary-Ann", "O'Neil", "") == "ONeil_MaryAnn_Company_Spring2028.pdf"
+    assert build_filename("Jake", "Ryan", "Goldman Sachs") == "Jake_Ryan_GoldmanSachs_Spring2028.pdf"
+    assert build_filename("Mary-Ann", "O'Neil", "") == "MaryAnn_ONeil_Company_Spring2028.pdf"
+    assert build_filename("Christopher", "Omubo", "apple") == "Christopher_Omubo_Apple_Spring2028.pdf"
+    assert build_filename("Jake", "Ryan", "eBay") == "Jake_Ryan_eBay_Spring2028.pdf"
 
 
 def test_scorer_deterministic_and_tailored_improves(parsed):
@@ -119,3 +137,17 @@ def test_xetex_compat_guards_pdftex_primitives():
     out = xetex_compat(SAMPLE)
     assert r"\ifdefined\pdfglyphtounicode\input{glyphtounicode}\fi" in out
     assert r"\ifdefined\pdfgentounicode\pdfgentounicode=1\fi" in out
+
+
+def test_grad_date_swaps_only_education_end_date():
+    assert tailor.detect_grad_date(SAMPLE) == "May 2028"
+    out = tailor.set_grad_date(SAMPLE, "May 2029")
+    assert out == SAMPLE.replace("Aug. 2024 -- May 2028", "Aug. 2024 -- May 2029", 1)
+    assert tailor.detect_grad_date(out) == "May 2029"
+    assert tailor.set_grad_date(SAMPLE, "") == SAMPLE
+
+
+def test_term_for():
+    assert term_for("May 2029") == "Spring2029"
+    assert term_for("Dec. 2028") == "Fall2028"
+    assert term_for("") == config.TERM_LABEL

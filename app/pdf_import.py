@@ -6,7 +6,7 @@ import re
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
-from . import config, llm
+from . import config, llm, storage
 
 TEMPLATE_PATH = config.ROOT / "examples" / "sample_resume.tex"
 
@@ -48,11 +48,16 @@ def extract_jd_text(data: bytes) -> str:
     text = extract_text(data)
     if len(text) >= 50:
         return text
-    # Likely a scanned PDF: let Claude read it.
-    return llm.call_text(
+    # Likely a scanned PDF: let Claude read it (once per distinct file).
+    cached = storage.cache_get("jd_text", data)
+    if cached is not None:
+        return cached
+    text = llm.call_text(
         "Transcribe the job description in this PDF as plain text. Output only the text, nothing else.",
         [_pdf_block(data), {"type": "text", "text": "Transcribe this job description."}],
         effort="low", max_tokens=16000).strip()
+    storage.cache_put("jd_text", data, text)
+    return text
 
 
 def resume_pdf_to_latex(data: bytes) -> str:

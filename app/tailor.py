@@ -1,12 +1,13 @@
 """JD analysis, bullet tailoring (with a hard change budget) and splicing into the .tex."""
 import difflib
 import math
+import re
 from typing import Literal
 
 from pydantic import BaseModel
 
 from . import config, llm
-from .latex_utils import escape_latex, latex_to_text
+from .latex_utils import escape_latex, latex_to_text, mask_comments
 from .tex_parser import ParsedResume
 
 
@@ -70,16 +71,19 @@ Extract what an ATS and a recruiter would screen for in a job description.
 - summary: one sentence describing the role.
 - keywords: 15-35 concrete, screenable keywords (languages, frameworks, tools, platforms, methodologies, domain terms, certifications, and the few soft skills that are explicitly emphasized). Use the exact wording from the JD for `term`. importance: 3 = required / repeated / in the title, 2 = clearly preferred, 1 = nice-to-have. `variants` lists common alternate spellings or abbreviations an ATS would also accept (e.g. "JavaScript" -> ["JS"], "Amazon Web Services" -> ["AWS"]). Do not list generic filler words like "team" or "communication" unless the JD stresses them."""
 
-TAILOR_SYSTEM = """You tailor an existing resume to a specific job description for ATS alignment while keeping it almost identical to the original.
+TAILOR_SYSTEM = """You tailor an existing resume to a specific job description to maximize its ATS match score. The target is a score of at least {target}/100.
 
-Hard rules:
-1. Change as little as possible. Return AT MOST {max_edits} bullet edits, ranked most impactful first. Pick bullets that are relevant to the job but under-use its keywords. Never touch bullets that are already strong matches.
-2. Every rewritten bullet MUST follow the Google XYZ formula: "Accomplished [X] as measured by [Y], by doing [Z]". Start with a strong past-tense action verb, include a concrete measurable result (%, $, time saved, users, scale, latency, etc.), and naturally work in the missing JD keywords that genuinely fit the experience. Keep the original facts, employer context and technologies; do not invent a different project.
-3. Keep each rewritten bullet within about ±20% of the original length so the resume keeps its page count. One sentence, no trailing period needed if the original has none.
-4. Metrics: reuse the original numbers when they exist. When the original has no number, you may estimate a realistic, conservative metric - then set metric_estimated=true and list each estimated figure in estimated_metrics so the candidate can verify it.
-5. new_text is plain text (no LaTeX). You may wrap a short phrase in **double asterisks** for bold only if the original bullet used bold.
-6. skills_edits: optionally add up to 5 missing JD keywords in total to EXISTING skills lines (use the line_id), only when the candidate's experience plausibly supports them. Never remove skills.
-7. reason: one short sentence on why this change improves the match."""
+How the score works: 60% keyword coverage (JD keywords found anywhere in the resume, weighted by importance), 20% must-have hard skills, 20% bullet quality (share of bullets with a number, a strong past-tense action verb first, and an XYZ connector such as "by", "using", "through", "via", "resulting in").
+
+Rules:
+1. Budget: return AT MOST {max_edits} bullet edits, and the words changed in bullets must stay under {max_change:.0%} of the resume (skills additions do not count toward this). Use that budget fully and spread the JD keywords across as many bullets as possible rather than piling them into one. Prefer bullets that are relevant to the job, miss its keywords, or lack a metric or action verb. Small, targeted rewordings that slot in 1-3 keywords each are better than full rewrites.
+2. Keep each original bullet's project, employer and core facts, and keep as much of its wording as you can. You may widen its scope: larger scale, more ownership, more of the stack touched. Work the missing JD keywords into bullets wherever that project could plausibly have involved them, including technologies the candidate does not list yet, and use the exact JD wording for each keyword.
+3. Every rewritten bullet follows the Google XYZ formula: "Accomplished [X] as measured by [Y], by doing [Z]". Start with a strong past-tense action verb, include a concrete measurable result (%, $, time saved, users, scale, latency, etc.) and use an XYZ connector.
+4. Metrics: reuse the original numbers when they exist. When there are none, invent a realistic, specific metric the candidate could credibly defend in an interview, then set metric_estimated=true and list each invented figure in estimated_metrics.
+5. Length: keep the resume on one page. A rewritten bullet may be at most about 25% longer than the original. One sentence, with no trailing period if the original has none.
+6. new_text is plain text (no LaTeX). You may wrap a short phrase in **double asterisks** for bold only if the original bullet used bold.
+7. skills_edits: add up to {max_skills} missing JD keywords in total to EXISTING skills lines (use the line_id), putting each on the best-fitting line. Prioritize importance-3 and importance-2 keywords and hard skills/tools. Never remove skills.
+8. reason: one short sentence on why this change improves the match."""
 
 EXPLAIN_SYSTEM = """You are an ATS expert explaining to a candidate why their tailored resume scores differently from their master resume against a job description.
 You are given both resume texts and a deterministic score breakdown. Be concrete and brief:
@@ -103,7 +107,9 @@ def max_edits_for(parsed: ParsedResume) -> int:
     return max(1, math.ceil(len(parsed.bullets) * config.MAX_BULLET_RATIO))
 
 
-def plan_tailoring(parsed: ParsedResume, jd: str, analysis: JDAnalysis, missing: list[str]) -> TailorPlan:
+def plan_tailoring(parsed: ParsedResume, jd: str, analysis: JDAnalysis, missing: list[str],
+                   feedback: str = "") -> TailorPlan:
+    """`feedback` describes a previous attempt (its edits, score and remaining gaps) for a refinement round."""
     max_edits = max_edits_for(parsed)
     bullets = "\n".join(f"[{b.id}] ({b.section}) {b.text}" for b in parsed.bullets)
     skills = "\n".join(f"[{s.id}] {s.label}: {s.text}" for s in parsed.skills) or "(no skills section found)"
@@ -128,8 +134,31 @@ def plan_tailoring(parsed: ParsedResume, jd: str, analysis: JDAnalysis, missing:
 {skills}
 </resume_skills_lines>
 
+{feedback}
 Return at most {max_edits} bullet edits."""
-    return llm.call_structured(TAILOR_SYSTEM.format(max_edits=max_edits), user, TailorPlan, effort="high")
+    system = TAILOR_SYSTEM.format(target=round(config.TARGET_SCORE), max_edits=max_edits,
+                                  max_change=config.MAX_CHANGE_RATIO, max_skills=config.MAX_SKILL_ADDS)
+    return llm.call_structured(system, user, TailorPlan, effort="high")
+
+
+def refinement_feedback(edits: list[dict], skills: list[dict], score: dict, change: float) -> str:
+    """Describe the previous attempt so the next round can close the remaining gaps."""
+    kept = "\n".join(f"[{e['bullet_id']}] {e['new_text']}" for e in edits if e.get("accepted")) or "(none)"
+    dropped = "\n".join(f"[{e['bullet_id']}] {e['dropped_reason']}" for e in edits if not e.get("accepted")) or "(none)"
+    added = ", ".join(k for s in skills if s.get("accepted") for k in s["add_keywords"]) or "(none)"
+    return f"""
+<previous_attempt>
+That attempt scored {score['overall']}/100 (breakdown: {score['breakdown']}); the target is {round(config.TARGET_SCORE)}.
+It changed {change:.0%} of the resume's words (limit {config.MAX_CHANGE_RATIO:.0%}).
+Accepted bullet edits:
+{kept}
+Edits dropped by the budget:
+{dropped}
+Skills added: {added}
+Keywords STILL missing after that attempt: {", ".join(score['missing']) or "(none)"}
+</previous_attempt>
+Return a complete revised plan (it replaces the previous one, it is not added to it). Keep the edits that worked, cover the still-missing keywords, and make cheaper edits if the previous ones were dropped for exceeding the budget.
+"""
 
 
 def explain(master_text: str, tailored_text: str, master_score: dict, tailored_score: dict,
@@ -158,8 +187,9 @@ def _words(text: str) -> list[str]:
     return text.lower().split()
 
 
-def change_ratio(parsed: ParsedResume, bullet_texts: dict[str, str], skill_adds: dict[str, list[str]]) -> float:
-    """Share of the resume's words that differ from the master."""
+def change_ratio(parsed: ParsedResume, bullet_texts: dict[str, str]) -> float:
+    """Share of the resume's words that differ from the master, counting bullet rewrites only
+    (skills additions have their own MAX_SKILL_ADDS cap)."""
     total = len(_words(parsed.plain_text())) or 1
     changed = 0
     for bid, new in bullet_texts.items():
@@ -169,16 +199,34 @@ def change_ratio(parsed: ParsedResume, bullet_texts: dict[str, str], skill_adds:
         sm = difflib.SequenceMatcher(a=_words(b.text), b=_words(new), autojunk=False)
         same = sum(block.size for block in sm.get_matching_blocks())
         changed += max(len(_words(b.text)), len(_words(new))) - same
-    for adds in skill_adds.values():
-        changed += sum(len(k.split()) for k in adds)
     return changed / total
 
 
 def enforce_budget(parsed: ParsedResume, plan: TailorPlan) -> tuple[list[dict], list[dict]]:
-    """Validate the plan and trim it to the bullet-count and word-change budgets.
+    """Validate the plan and trim it to the bullet-count, skill-count and word-change budgets.
 
+    Bullets are accepted in the plan's order while their word change stays under budget;
+    skills additions don't count toward it and are capped by MAX_SKILL_ADDS instead.
     Returns (edits, skills_edits) as plain dicts with `accepted`/`dropped_reason` fields.
     """
+    skills: list[dict] = []
+    budget_left = config.MAX_SKILL_ADDS
+    for s in plan.skills_edits:
+        line = parsed.skill(s.line_id)
+        if not line:
+            continue
+        existing = {x.strip().lower() for x in line.text.split(",")}
+        adds = []
+        for k in s.add_keywords:
+            k = k.strip()
+            if k and k.lower() not in existing and k.lower() not in line.text.lower() and budget_left > 0:
+                adds.append(k)
+                existing.add(k.lower())
+                budget_left -= 1
+        if adds:
+            skills.append({"line_id": line.id, "label": line.label, "original_text": line.text,
+                           "add_keywords": adds, "reason": s.reason, "accepted": True})
+
     max_edits = max_edits_for(parsed)
     edits: list[dict] = []
     seen = set()
@@ -195,30 +243,12 @@ def enforce_budget(parsed: ParsedResume, plan: TailorPlan) -> tuple[list[dict], 
             item.update(accepted=False, dropped_reason=f"Over the {max_edits}-bullet change limit")
         else:
             trial = {**kept_texts, e.bullet_id: text}
-            if kept_texts and change_ratio(parsed, trial, {}) > config.MAX_CHANGE_RATIO:
+            if kept_texts and change_ratio(parsed, trial) > config.MAX_CHANGE_RATIO:
                 item.update(accepted=False,
                             dropped_reason=f"Would exceed the {config.MAX_CHANGE_RATIO:.0%} change budget")
             else:
                 kept_texts[e.bullet_id] = text
         edits.append(item)
-
-    skills: list[dict] = []
-    budget_left = 5
-    for s in plan.skills_edits:
-        line = parsed.skill(s.line_id)
-        if not line:
-            continue
-        existing = {x.strip().lower() for x in line.text.split(",")}
-        adds = []
-        for k in s.add_keywords:
-            k = k.strip()
-            if k and k.lower() not in existing and k.lower() not in line.text.lower() and budget_left > 0:
-                adds.append(k)
-                existing.add(k.lower())
-                budget_left -= 1
-        if adds:
-            skills.append({"line_id": line.id, "label": line.label, "original_text": line.text,
-                           "add_keywords": adds, "reason": s.reason, "accepted": True})
     return edits, skills
 
 
@@ -250,3 +280,40 @@ def build_tex(parsed: ParsedResume, edits: list[dict], skills: list[dict]) -> st
 def tailored_bullets(parsed: ParsedResume, edits: list[dict]) -> list[str]:
     new = {e["bullet_id"]: e["new_text"] for e in edits if e.get("accepted")}
     return [latex_to_text(escape_latex(new[b.id])) if b.id in new else b.text for b in parsed.bullets]
+
+
+# ---------- graduation date ----------
+
+_EDU_RE = re.compile(r"\\section\*?\{[^}]*Education[^}]*\}", re.I)
+_SECTION_RE = re.compile(r"\\section\*?\{")
+# end of a date range: "Aug. 2024 -- May 2028", "2024 – Expected May 2028"
+_RANGE_END_RE = re.compile(r"(--|–|—|\bto\b)(\s*)(?:Expected\s+)?(?:[A-Z][a-z]{2,8}\.?\s+)?(19|20)\d\d")
+
+
+def detect_grad_date(tex: str) -> str | None:
+    """The end date of the first Education entry, e.g. "May 2028"."""
+    span = _education_span(tex)
+    if not span:
+        return None
+    m = _RANGE_END_RE.search(tex, *span)
+    return m.group(0)[len(m.group(1)) + len(m.group(2)):].strip() if m else None
+
+
+def set_grad_date(tex: str, grad: str) -> str:
+    """Replace the end date of the first Education entry's date range with `grad`."""
+    span = _education_span(tex)
+    if not grad or not span:
+        return tex
+    m = _RANGE_END_RE.search(tex, *span)
+    if not m:
+        return tex
+    return tex[:m.start()] + m.group(1) + m.group(2) + escape_latex(grad) + tex[m.end():]
+
+
+def _education_span(tex: str) -> tuple[int, int] | None:
+    masked = mask_comments(tex)
+    m = _EDU_RE.search(masked)
+    if not m:
+        return None
+    nxt = _SECTION_RE.search(masked, m.end())
+    return m.end(), nxt.start() if nxt else len(tex)

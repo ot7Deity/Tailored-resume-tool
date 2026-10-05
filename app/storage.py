@@ -1,4 +1,5 @@
 """Local file storage: master resume (+ backups), name override, and tailoring runs."""
+import hashlib
 import json
 import re
 import shutil
@@ -58,6 +59,23 @@ def read_profile() -> dict:
 
 def save_profile(profile: dict) -> None:
     (_data() / "profile.json").write_text(json.dumps(profile, indent=2), encoding="utf-8")
+
+
+# ---------- cache for Claude conversions (keyed by the uploaded file's bytes) ----------
+
+def _cache_file(kind: str, data: bytes) -> Path:
+    return _data() / "cache" / kind / f"{hashlib.sha256(data).hexdigest()}.txt"
+
+
+def cache_get(kind: str, data: bytes) -> str | None:
+    p = _cache_file(kind, data)
+    return p.read_text(encoding="utf-8") if p.exists() else None
+
+
+def cache_put(kind: str, data: bytes, text: str) -> None:
+    p = _cache_file(kind, data)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8", newline="")
 
 
 # ---------- runs ----------

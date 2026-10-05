@@ -58,9 +58,25 @@ def compile_tex(tex: str, assets: Path | None = None) -> CompileResult:
         return CompileResult(True, pdf.read_bytes(), "\n".join(log.splitlines()[-10:]))
 
 
+_SEASONS = {"jan": "Spring", "feb": "Spring", "mar": "Spring", "apr": "Spring", "may": "Spring",
+            "jun": "Summer", "jul": "Summer", "aug": "Fall", "sep": "Fall", "oct": "Fall", "nov": "Fall",
+            "dec": "Fall"}
+
+
+def term_for(grad_date: str | None) -> str:
+    """Filename term for a graduation date: "May 2029" -> "Spring2029" (else TERM_LABEL)."""
+    m = re.fullmatch(r"\s*([A-Za-z]{3})[A-Za-z]*\.?\s+(\d{4})\s*", grad_date or "")
+    if not m or m.group(1).lower() not in _SEASONS:
+        return config.TERM_LABEL
+    return _SEASONS[m.group(1).lower()] + m.group(2)
+
+
 def build_filename(first: str, last: str, company: str, term: str | None = None) -> str:
-    """Last_First_Company_Spring2028.pdf"""
+    """First_Last_Company_Spring2028.pdf"""
     def clean(s: str) -> str:
         return re.sub(r"[^A-Za-z0-9]", "", s or "")
-    parts = [clean(last), clean(first), clean(company) or "Company", clean(term or config.TERM_LABEL)]
+    company = company or ""
+    if company.islower():  # "apple" -> "Apple", "goldman sachs" -> "Goldman Sachs"
+        company = company.title()
+    parts = [clean(first), clean(last), clean(company) or "Company", clean(term or config.TERM_LABEL)]
     return "_".join(p for p in parts if p) + ".pdf"

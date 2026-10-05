@@ -5,15 +5,15 @@ A local web app that keeps your master LaTeX resume and tailors it to a job desc
 It works in four steps:
 
 1. **Master resume.** Upload or paste your `.tex` file and edit it any time. Every save backs up the previous version to `data/backups/`.
-2. **Paste a job description.** Claude pulls out the keywords an ATS screens for. It then rewrites only a few bullets, at most about 10% of bullets and about 10% of words. Each rewritten bullet uses the Google **XYZ** format: *Accomplished X, as measured by Y, by doing Z*.
+2. **Paste a job description.** Claude pulls out the keywords an ATS screens for. It then rewrites bullets and adds skills to push the tailored score to at least **85/100**, changing at most about half the bullets and about 20% of the words (skills additions don't count toward the 20%; they are capped at 15 keywords). It works JD keywords into the bullets and the skills lines, widens scope where it fits, and estimates metrics where the original has none. If the first pass falls short, it tries again (up to 3 passes) and keeps the best one. Each rewritten bullet uses the Google **XYZ** format: *Accomplished X, as measured by Y, by doing Z*.
 3. **Preview page.** This shows:
    - the ATS score of the master vs. the JD and of the tailored version vs. the JD;
    - the reasons for the difference and which version aligns better;
-   - a before/after view of each changed bullet, with a ⚠ badge on any AI-estimated metric;
+   - a before/after view of each changed bullet, with a ⚠ badge on any AI-estimated metric or added skill, so you can check or drop anything you can't back up in an interview;
    - the compiled PDF.
 
    You can accept or reject each change, or type in your real numbers, before you download.
-4. **Download.** You get `Last_First_Company_Spring2028.pdf`.
+4. **Download.** You get `First_Last_Company_Spring2028.pdf`, e.g. `Christopher_Omubo_Apple_Spring2028.pdf`.
 
 The tool never regenerates your document. It only swaps out the text of the chosen bullets, and appends keywords to existing skills lines. Everything else in your `.tex` stays byte-for-byte identical.
 
@@ -62,9 +62,13 @@ Claude writes a plain-English explanation of the gap on top of this, with sugges
 |---|---|---|
 | `CLAUDE_MODEL` | `claude-opus-5` | Model for analysis, tailoring and explanation |
 | `CLAUDE_FALLBACKS` | `1` | Server-side refusal fallback |
-| `TERM_LABEL` | `Spring2028` | Last part of the filename |
-| `MAX_CHANGE_RATIO` | `0.10` | Max share of words changed |
-| `MAX_BULLET_RATIO` | `0.10` | Max share of bullets rewritten |
+| `TERM_LABEL` | `Spring2028` | Last part of the filename when no graduation date is chosen |
+| `GRAD_DATES` | `May 2028,May 2029` | Graduation dates you can pick; the choice sets the Education end date and the filename term (May 2029 → `Spring2029`) |
+| `MAX_CHANGE_RATIO` | `0.20` | Max share of words changed in bullets (skills not counted) |
+| `MAX_BULLET_RATIO` | `0.50` | Max share of bullets rewritten |
+| `TARGET_SCORE` | `85` | Tailored score to aim for |
+| `TAILOR_ROUNDS` | `3` | Max tailoring passes when below target |
+| `MAX_SKILL_ADDS` | `15` | Max keywords added to skills lines |
 | `TECTONIC_PATH` | – | Path to `tectonic.exe` |
 
 ## Supported resume formats

@@ -91,8 +91,8 @@ $("#save").onclick = async () => {
   } catch (e) { showBanner(banner, "error", e.message); }
 };
 
-$("#upload").onchange = async (ev) => {
-  const f = ev.target.files[0]; if (!f) return;
+async function uploadMaster(f) {
+  if (!/\.(tex|pdf)$/i.test(f.name)) { showBanner(banner, "error", "Upload a .tex or .pdf file."); return; }
   const fd = new FormData(); fd.append("file", f);
   const isPdf = f.name.toLowerCase().endsWith(".pdf");
   const label = $("#upload-label");
@@ -104,15 +104,17 @@ $("#upload").onchange = async (ev) => {
     const m = await api("/api/master/upload", { method: "POST", body: fd });
     render(m);
     if (m.unsaved) {
-      showBanner(banner, "warn", `Converted ${f.name} to LaTeX (Jake's template). Review the text and the detected bullets, ` +
+      showBanner(banner, "warn", `${m.cached ? "Loaded from cache (same PDF as before, no API call). " : ""}Converted ${f.name} to LaTeX (Jake's template). Review the text and the detected bullets, ` +
         `use “Save master” to keep it, then “Compile preview” to check the PDF. Nothing is saved until you do.`);
     } else {
       showBanner(banner, "ok", `Uploaded ${f.name} as your master resume.`);
     }
   } catch (e) { showBanner(banner, "error", e.message); }
   label.firstChild.textContent = "Upload .tex or PDF";
-  ev.target.value = "";
-};
+}
+
+$("#upload").onchange = (ev) => { const f = ev.target.files[0]; ev.target.value = ""; if (f) uploadMaster(f); };
+onFileDrop(uploadMaster);
 
 $("#save-name").onclick = async () => {
   try {
@@ -126,8 +128,10 @@ $("#preview-btn").onclick = async () => {
   try {
     const res = await fetch("/api/master/pdf");
     if (!res.ok) throw new Error((await res.json()).detail);
+    const note = res.headers.get("X-Fit-Note");
     $("#pdf").src = URL.createObjectURL(await res.blob());
     $("#pdf-card").classList.remove("hidden");
+    if (note) showBanner(banner, note.startsWith("Fits") ? "ok" : "warn", `1 page: ${note}`);
   } catch (e) { showBanner(banner, "error", "Compile failed:\n" + e.message); }
   btn.disabled = false; btn.textContent = "Compile preview";
 };

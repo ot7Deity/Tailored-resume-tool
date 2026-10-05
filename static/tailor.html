@@ -9,19 +9,23 @@
 <body>
 <main>
   <h1>Tailor to a job</h1>
-  <p class="sub">Paste the job description. Claude rewrites only the few bullets that matter most (XYZ format), then you review everything before downloading.</p>
+  <p class="sub">Paste the job description. Claude works the job's keywords into your bullets and skills (XYZ format, up to 20% of bullet words, plus skills) aiming for an 85+ match, then you review everything before downloading.</p>
   <div id="banner" class="hidden"></div>
+  <div id="master-info" class="banner small hidden"></div>
 
   <div class="grid2">
     <div class="card">
       <label for="company">Company (optional, auto-detected from the JD)</label>
-      <input id="company" type="text" placeholder="e.g. Google">
+      <input id="company" type="text" placeholder="e.g. Google" autocomplete="off">
+      <div style="height:12px"></div>
+      <label for="grad">Graduation date</label>
+      <select id="grad"></select>
       <div style="height:12px"></div>
       <div class="row" style="justify-content:space-between;margin-bottom:4px">
         <label for="jd" style="margin:0">Job description</label>
         <label class="btn small" style="margin:0" id="jd-upload-label">Load from PDF / .txt<input id="jd-upload" type="file" accept=".pdf,.txt,application/pdf,text/plain" hidden></label>
       </div>
-      <textarea id="jd" class="jd" placeholder="Paste the full job description here…"></textarea>
+      <textarea id="jd" class="jd" autocomplete="off" placeholder="Paste the full job description here…"></textarea>
       <div class="row" style="margin-top:12px">
         <button id="go" class="primary">Tailor my resume</button>
         <span id="status" class="muted small"></span>
@@ -61,7 +65,7 @@ $("#go").onclick = async () => {
   $("#status").innerHTML = `<span class="spinner"></span> ${steps[0]}`;
   const timer = setInterval(() => { i = Math.min(i + 1, steps.length - 1); $("#status").innerHTML = `<span class="spinner"></span> ${steps[i]}`; }, 12000);
   try {
-    const run = await api("/api/tailor", { method: "POST", body: { jd, company: $("#company").value } });
+    const run = await api("/api/tailor", { method: "POST", body: { jd, company: $("#company").value, grad_date: $("#grad").value } });
     location.href = `preview.html?run=${run.run_id}`;
   } catch (e) {
     showBanner(banner, "error", e.message);
@@ -70,8 +74,8 @@ $("#go").onclick = async () => {
   } finally { clearInterval(timer); }
 };
 
-$("#jd-upload").onchange = async (ev) => {
-  const f = ev.target.files[0]; if (!f) return;
+async function loadJdFile(f) {
+  if (!/\.(pdf|txt)$/i.test(f.name)) { showBanner(banner, "error", "Drop a .pdf or .txt job description."); return; }
   const label = $("#jd-upload-label");
   label.firstChild.textContent = "Reading…";
   const fd = new FormData(); fd.append("file", f);
@@ -81,9 +85,34 @@ $("#jd-upload").onchange = async (ev) => {
     showBanner(banner, "ok", `Loaded the job description from ${f.name}. Check the text, then click Tailor.`);
   } catch (e) { showBanner(banner, "error", e.message); }
   label.firstChild.textContent = "Load from PDF / .txt";
-  ev.target.value = "";
-};
+}
 
+$("#jd-upload").onchange = (ev) => { const f = ev.target.files[0]; ev.target.value = ""; if (f) loadJdFile(f); };
+onFileDrop(loadJdFile);
+
+// Start every visit with an empty job; the saved master resume is reused as-is (no upload, no API call).
+function resetJob() { $("#jd").value = ""; $("#company").value = ""; $("#status").textContent = ""; $("#go").disabled = false; }
+window.addEventListener("pageshow", (ev) => { if (ev.persisted) resetJob(); });
+
+async function loadMaster() {
+  const info = $("#master-info");
+  const m = await api("/api/master").catch(() => null);
+  if (!m || !m.exists) {
+    info.className = "banner warn small";
+    info.innerHTML = `No master resume saved yet. <a href="index.html">Add one on the Master resume page</a> first.`;
+    $("#go").disabled = true;
+    return;
+  }
+  fillGradSelect($("#grad"), m.grad_dates, m.detected_grad_date || m.grad_dates[0]);
+  const name = [m.name.first, m.name.last].filter(Boolean).join(" ") || "your resume";
+  const saved = m.saved_at ? ` · saved ${esc(m.saved_at.replace("T", " "))}` : "";
+  info.className = "banner ok small";
+  info.innerHTML = `Using your saved master resume: <b>${esc(name)}</b> · ${m.bullets.length} bullets${saved}.
+    Nothing to re-upload. <a href="index.html">Edit master</a>`;
+}
+
+resetJob();
+loadMaster();
 loadRuns();
 </script>
 </body>

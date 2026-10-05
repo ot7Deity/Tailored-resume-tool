@@ -103,3 +103,9 @@ def latex_to_text(src: str) -> str:
 def inline_text(src: str) -> str:
     """latex_to_text collapsed onto a single line."""
     return re.sub(r"\s+", " ", latex_to_text(src)).strip()
+
+
+def body_text(tex: str) -> str:
+    """Plain text of everything after \\begin{document}."""
+    m = re.search(r"\\begin\{document\}", mask_comments(tex))
+    return latex_to_text(tex[m.end():] if m else tex)

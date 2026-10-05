@@ -59,10 +59,12 @@
 
   <div class="sticky-actions">
     <div><label>Company</label><input id="company" type="text" style="width:200px"></div>
+    <div><label>Graduation</label><select id="grad"></select></div>
     <div style="flex:1;min-width:260px"><label>File name</label><input id="filename" type="text"></div>
     <button id="apply">Apply my changes</button>
     <a id="download" class="btn primary">Download PDF</a>
     <a id="download-tex" class="btn">.tex</a>
+    <a class="btn" href="tailor.html?new=1" title="Paste another job description; your saved master resume is reused">New job</a>
   </div>
 </main>
 <script src="app.js"></script>
@@ -74,12 +76,14 @@ let run = null, dirty = false;
 
 const LABELS = { keyword_coverage: "Keyword coverage", hard_skill_match: "Must-have hard skills", bullet_quality: "Bullet quality" };
 
-function scoreCard(title, s, cls, win) {
+function scoreCard(title, s, cls, win, target) {
   const rows = Object.entries(LABELS).map(([k, label]) => `
     <div class="metric-row"><span>${label}</span><span>${s.breakdown[k]}</span></div>
     <div class="bar ${cls}"><span style="width:${s.breakdown[k]}%"></span></div>`).join("");
   return `<div class="row" style="justify-content:space-between"><b>${title}</b>${win ? '<span class="pill good">Better match</span>' : ""}</div>
-    <div class="num">${s.overall}<small> / 100</small></div>${rows}`;
+    <div class="num">${s.overall}<small> / 100</small></div>
+    ${target ? `<div style="margin:-4px 0 8px"><span class="pill ${s.overall >= target ? "good" : "warn"}">${s.overall >= target ? "✓ Target" : "Below target"} ${target}</span>
+      ${run.rounds_used > 1 ? `<span class="small muted">best of ${run.rounds_used} tailoring passes</span>` : ""}</div>` : ""}${rows}`;
 }
 
 function render() {
@@ -87,7 +91,7 @@ function render() {
   $("#summary").textContent = run.summary;
   const { master, tailored } = run.scores, cmp = run.comparison;
   $("#card-master").innerHTML = scoreCard("Master resume", master, "master", cmp.winner === "master");
-  $("#card-tailored").innerHTML = scoreCard("Tailored resume", tailored, "", cmp.winner === "tailored");
+  $("#card-tailored").innerHTML = scoreCard("Tailored resume", tailored, "", cmp.winner === "tailored", run.target_score);
   $("#card-master").classList.toggle("win", cmp.winner === "master");
   $("#card-tailored").classList.toggle("win", cmp.winner === "tailored");
   const verdict = { tailored: "The tailored resume aligns better with this job.",
@@ -124,7 +128,7 @@ function render() {
 
   // change meter
   const ratio = run.change_ratio, max = run.max_change_ratio;
-  $("#change-label").innerHTML = `${run.bullets_changed} of ${run.bullet_count} bullets rewritten · <b>${(ratio * 100).toFixed(1)}%</b> of words changed (target ≤ ${(max * 100).toFixed(0)}%)`;
+  $("#change-label").innerHTML = `${run.bullets_changed} of ${run.bullet_count} bullets rewritten · <b>${(ratio * 100).toFixed(1)}%</b> of words changed in bullets (target ≤ ${(max * 100).toFixed(0)}%; skills additions not counted)`;
   $("#meter").classList.toggle("over", ratio > max);
   $("#meter span").style.width = Math.min(100, ratio / max * 100) + "%";
 
@@ -151,7 +155,7 @@ function render() {
         <span><b>${esc(s.label)}:</b> ${esc(s.original_text)}, ${s.add_keywords.map(k => `<mark class="kw">${esc(k)}</mark>`).join(", ")}</span>
         <label class="switch"><input type="checkbox" class="accept-skill" ${s.accepted ? "checked" : ""}> Add these</label>
       </div>
-      <div class="meta">${esc(s.reason)} · Only keep skills you actually have.</div>
+      <div class="meta"><span class="pill warn">⚠ Added: be ready to talk about these</span> ${esc(s.reason)}</div>
     </div>`).join("") : "";
 
   // pdf
@@ -159,18 +163,27 @@ function render() {
   if (c.ok) {
     $("#pdf").src = `/api/runs/${runId}/pdf?t=${Date.now()}`;
     $("#pdf").classList.remove("hidden"); $("#compile-log").classList.add("hidden");
-    $("#compile-status").innerHTML = '<span class="pill good">Compiled</span>';
+    const fitted = c.fit_level > 0;
+    $("#compile-status").innerHTML = `<span class="pill good">✓ 1 page</span>` +
+      (fitted ? ` <span class="pill ${c.scale < 0.9 ? "warn" : "info"}" title="${esc(c.fit_note)}">auto-fit</span>` : "") +
+      (c.fit_note ? ` <span class="muted">${esc(c.fit_note)}</span>` : "");
   } else {
     $("#pdf").classList.add("hidden");
     $("#compile-log").textContent = c.log; $("#compile-log").classList.remove("hidden");
     $("#compile-status").innerHTML = '<span class="pill bad">Compile failed</span>';
   }
   $("#company").value = run.company;
+  fillGradSelect($("#grad"), run.grad_dates || [], run.grad_date);
   $("#filename").value = run.filename;
   $("#download").href = `/api/runs/${runId}/download`;
   $("#download").classList.toggle("hidden", !c.ok);
   $("#download-tex").href = `/api/runs/${runId}/tex`;
   setDirty(false);
+}
+
+// mirrors build_filename: "apple" -> "Apple"
+function titleIfLower(v) {
+  return v === v.toLowerCase() ? v.replace(/\b[a-z]/g, c => c.toUpperCase()) : v;
 }
 
 function setDirty(v) {
@@ -180,30 +193,56 @@ function setDirty(v) {
 }
 
 document.addEventListener("input", (ev) => {
-  if (ev.target.matches(".new, .accept, .accept-skill, #company, #filename")) setDirty(true);
+  if (ev.target.matches(".new, .accept, .accept-skill, #company, #grad, #filename")) setDirty(true);
   if (ev.target.matches(".accept, .accept-skill")) ev.target.closest(".change").classList.toggle("rejected", !ev.target.checked);
+  if (ev.target.id === "grad" && run && termFor(ev.target.value)) {
+    $("#filename").value = $("#filename").value.replace(/_[A-Za-z]+\d{4}\.pdf$/i, `_${termFor(ev.target.value)}.pdf`);
+  }
   if (ev.target.id === "company" && run) {
-    $("#filename").value = run.filename.replace(/^([^_]*_[^_]*_)[^_]*(_[^_]*\.pdf)$/i, `$1${ev.target.value.replace(/[^A-Za-z0-9]/g, "")}$2`);
+    $("#filename").value = run.filename.replace(/^([^_]*_[^_]*_)[^_]*(_[^_]*\.pdf)$/i, `$1${titleIfLower(ev.target.value).replace(/[^A-Za-z0-9]/g, "")}$2`);
   }
 });
 
-$("#apply").onclick = async () => {
+async function applyChanges() {
   const btn = $("#apply"); btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Recompiling…';
   const edits = [...document.querySelectorAll("[data-i]")].map(el => ({
     bullet_id: run.edits[el.dataset.i].bullet_id, accepted: $(".accept", el).checked, new_text: $(".new", el).value }));
   const skills = [...document.querySelectorAll("[data-s]")].map(el => ({
     line_id: run.skills_edits[el.dataset.s].line_id, accepted: $(".accept-skill", el).checked }));
+  let ok = false;
   try {
     run = await api(`/api/runs/${runId}/apply`, { method: "POST",
-      body: { edits, skills, company: $("#company").value, filename: $("#filename").value } });
+      body: { edits, skills, company: $("#company").value, filename: $("#filename").value, grad_date: $("#grad").value } });
     render();
     showBanner(banner, "ok", "Changes applied. Scores and PDF updated.");
+    ok = run.compile.ok;
   } catch (e) { showBanner(banner, "error", e.message); }
   btn.disabled = false;
-};
+  return ok;
+}
+
+$("#apply").onclick = applyChanges;
+
+// No confirm()/alert(): embedded browsers (e.g. the editor's built-in browser) pause on native dialogs.
+function offerNewJob() {
+  banner.className = "banner ok";
+  banner.innerHTML = `Downloaded. Tailor another job with the same master resume?
+    <a class="btn primary" href="tailor.html?new=1" style="margin-left:8px">New job</a>`;
+  banner.classList.remove("hidden");
+}
 
 $("#download").onclick = (ev) => {
-  if (dirty && !confirm("You have unapplied changes. Download the last compiled version anyway?")) ev.preventDefault();
+  if (!dirty) { setTimeout(offerNewJob, 300); return; }
+  ev.preventDefault();
+  banner.className = "banner warn";
+  banner.innerHTML = `You have changes that aren't applied yet.
+    <button id="apply-dl" class="primary" style="margin-left:8px">Apply &amp; download</button>
+    <a id="dl-anyway" class="btn" href="${$("#download").href}">Download last version</a>`;
+  banner.classList.remove("hidden");
+  banner.scrollIntoView({ behavior: "smooth", block: "center" });
+  $("#apply-dl").onclick = async () => {
+    if (await applyChanges()) { location.href = $("#download").href; setTimeout(offerNewJob, 300); }
+  };
 };
 
 $("#refresh-explain").onclick = async () => {
