@@ -112,6 +112,9 @@ function render() {
       ${ex.advice.length ? `<b class="small">Suggestions</b><ul class="small" style="padding-left:18px;margin:4px 0 0">${ex.advice.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}`;
   } else if (run.explanation_error) {
     html += `<p class="small muted">AI analysis unavailable: ${esc(run.explanation_error)}</p>`;
+  } else {
+    html += `<p class="small muted">The scores and breakdown below are already computed — they don't need AI.
+      Click “Refresh AI analysis” for a written explanation (one extra Claude call).</p>`;
   }
   $("#ai-explain").innerHTML = html;
   $("#reasons").innerHTML = cmp.reasons.map(r => `<li>${esc(r)}</li>`).join("");

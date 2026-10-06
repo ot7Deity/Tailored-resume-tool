@@ -1,11 +1,28 @@
 """End-to-end tailoring pipeline: analyze -> tailor -> splice -> score -> compile -> explain."""
 from datetime import datetime
 
+from pydantic import ValidationError
+
 from . import compiler, config, one_page, storage, tailor
 from .latex_utils import body_text
 from .llm import LLMError
 from .scorer import compare, score_resume
 from .tex_parser import ParsedResume, parse_resume
+
+
+def _analyze_jd_cached(jd: str) -> tuple[tailor.JDAnalysis, bool]:
+    """Reuse a previous analysis of the same JD. Saves a Claude call, and keeps the
+    keyword set from drifting so master scores stay comparable across re-runs."""
+    key = " ".join(jd.split()).encode("utf-8")  # whitespace-insensitive
+    cached = storage.cache_get("jd_analysis", key)
+    if cached:
+        try:
+            return tailor.JDAnalysis.model_validate_json(cached), True
+        except ValidationError:
+            pass
+    analysis = tailor.analyze_jd(jd)
+    storage.cache_put("jd_analysis", key, analysis.model_dump_json())
+    return analysis, False
 
 
 def resolve_name(parsed: ParsedResume) -> tuple[str, str]:
@@ -88,7 +105,7 @@ def run_tailor(jd: str, company_override: str = "", grad_date: str = "") -> dict
     if not parsed.bullets:
         raise ValueError("No bullets found in the master resume (expected \\resumeItem{...} or \\item ...).")
 
-    analysis = tailor.analyze_jd(jd)
+    analysis, jd_cached = _analyze_jd_cached(jd)
     keywords = [k.model_dump() for k in analysis.keywords]
     master_score = score_resume(parsed.plain_text(), [b.text for b in parsed.bullets], keywords)
 
@@ -116,11 +133,15 @@ def run_tailor(jd: str, company_override: str = "", grad_date: str = "") -> dict
         "max_change_ratio": config.MAX_CHANGE_RATIO,
         "target_score": config.TARGET_SCORE,
         "rounds_used": rounds,
+        "jd_cached": jd_cached,
     }
     tex = tailor.set_grad_date(tailor.build_tex(parsed, edits, skills), grad)
     _score_pair(parsed, run, tex)
     pdf, tex = _compile(run, tex)
-    _explain(parsed, run, tex)
+    if config.AUTO_EXPLAIN:
+        _explain(parsed, run, tex)
+    else:
+        run.update(explanation=None, explanation_error=None, explanation_stale=False)
     storage.save_run(run, master_tex=master_tex, tailored_tex=tex, pdf=pdf)
     return run
 

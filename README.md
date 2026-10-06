@@ -62,6 +62,7 @@ Claude writes a plain-English explanation of the gap on top of this, with sugges
 |---|---|---|
 | `CLAUDE_MODEL` | `claude-opus-5` | Model for analysis, tailoring and explanation |
 | `CLAUDE_FALLBACKS` | `1` | Server-side refusal fallback |
+| `AUTO_EXPLAIN` | `0` | Write the AI score explanation during tailoring. Off by default: scores are deterministic and don't need it, so this saves one Claude call per run. Click *Refresh AI analysis* when you want the write-up |
 | `TERM_LABEL` | `Spring2028` | Last part of the filename when no graduation date is chosen |
 | `GRAD_DATES` | `May 2028,May 2029` | Graduation dates you can pick; the choice sets the Education end date and the filename term (May 2029 → `Spring2029`) |
 | `MAX_CHANGE_RATIO` | `0.20` | Max share of words changed in bullets (skills not counted) |

@@ -87,6 +87,31 @@ def test_grad_date_choice(client, tmp_path):
     assert client.post("/api/tailor", json={"jd": JD, "grad_date": "June 2031"}).status_code == 400
 
 
+def test_jd_analysis_is_cached_across_runs(client, monkeypatch):
+    """A second run on the same JD reuses the stored analysis instead of calling Claude again."""
+    client.put("/api/master", json={"tex": SAMPLE})
+    calls = []
+    real = tailor.analyze_jd
+    monkeypatch.setattr(tailor, "analyze_jd", lambda jd: (calls.append(jd), real(jd))[1])
+
+    jd = "We need a Python engineer with Kubernetes experience. " * 5
+    first = client.post("/api/tailor", json={"jd": jd}).json()
+    second = client.post("/api/tailor", json={"jd": jd.replace(" ", "  ")}).json()  # whitespace differs
+
+    assert len(calls) == 1, "analyze_jd should only run for the first request"
+    assert first["jd_cached"] is False and second["jd_cached"] is True
+    # identical keyword set -> master scores match exactly, so runs are comparable
+    assert first["scores"]["master"] == second["scores"]["master"]
+
+
+def test_explanation_is_deferred_by_default(client):
+    client.put("/api/master", json={"tex": SAMPLE})
+    run = client.post("/api/tailor", json={"jd": "Python and Kubernetes engineer wanted. " * 5}).json()
+    assert run["explanation"] is None and run["explanation_error"] is None
+    # the deterministic half is still there
+    assert run["scores"]["tailored"]["overall"] > 0 and run["comparison"]["reasons"]
+
+
 def test_retries_until_target(client, monkeypatch):
     monkeypatch.setattr(config, "TARGET_SCORE", 101)  # unreachable -> every round runs
     prompts = []

@@ -5,7 +5,7 @@ import pytest
 from app import config, tailor
 from app.compiler import build_filename, term_for, xetex_compat
 from app.latex_utils import escape_latex, latex_to_text
-from app.scorer import score_resume
+from app.scorer import bullet_quality, quality_gaps, score_resume
 from app.tex_parser import parse_resume
 
 SAMPLE = (Path(__file__).parent / "fixtures" / "sample_resume.tex").read_text(encoding="utf-8")
@@ -71,6 +71,24 @@ def test_escape_latex():
     assert escape_latex("C# & 50% of $5_000 {x}") == r"C\# \& 50\% of \$5\_000 \{x\}"
     assert escape_latex("Cut cost **40%** fast") == r"Cut cost \textbf{40\%} fast"
     assert latex_to_text(escape_latex("R&D ~ 100%")) == "R&D ~ 100%"
+
+
+def test_edit_that_weakens_structure_is_rejected(parsed):
+    """Tailoring may never lower a bullet's metric / action verb / XYZ score."""
+    strong = next(b for b in parsed.bullets if len(quality_gaps(b.text)) < 3)
+    plan = make_plan(1)
+    plan.edits[0] = plan.edits[0].model_copy(update={"bullet_id": strong.id, "new_text": "Stuff about things"})
+    edits, _ = tailor.enforce_budget(parsed, plan)
+    assert edits[0]["accepted"] is False
+    assert "drop the bullet's" in edits[0]["dropped_reason"]
+
+
+def test_quality_gaps_matches_scoring():
+    assert quality_gaps("Reduced latency 30% by caching") == []
+    assert bullet_quality("Reduced latency 30% by caching") == pytest.approx(1.0)
+    assert quality_gaps("Responsible for the website") == ["metric", "action verb", "XYZ connector"]
+    assert bullet_quality("Responsible for the website") == 0.0
+    assert quality_gaps("Built a parser using recursion") == ["metric"]
 
 
 def test_budget_caps_edits(parsed):

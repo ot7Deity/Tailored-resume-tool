@@ -58,19 +58,40 @@ def keyword_found(text_norm: str, kw: dict) -> bool:
     return False
 
 
-def bullet_quality(bullet_text: str) -> float:
-    words = bullet_text.split()
+def _has_metric(text: str) -> bool:
+    return bool(_METRIC_RE.search(text))
+
+
+def _has_action_verb(text: str) -> bool:
+    words = text.split()
     if not words:
-        return 0.0
+        return False
     first = re.sub(r"[^a-z]", "", words[0].lower())
-    score = 0.0
-    if _METRIC_RE.search(bullet_text):
-        score += 0.4
-    if first in ACTION_VERBS or (first.endswith("ed") and len(first) > 4):
-        score += 0.3
-    if _XYZ_RE.search(bullet_text):
-        score += 0.3
-    return score
+    return first in ACTION_VERBS or (first.endswith("ed") and len(first) > 4)
+
+
+def _has_xyz_connector(text: str) -> bool:
+    return bool(_XYZ_RE.search(text))
+
+
+QUALITY_PARTS = (
+    ("metric", 0.4, _has_metric),
+    ("action verb", 0.3, _has_action_verb),
+    ("XYZ connector", 0.3, _has_xyz_connector),
+)
+
+
+def bullet_quality(bullet_text: str) -> float:
+    if not bullet_text.split():
+        return 0.0
+    return sum(weight for _, weight, ok in QUALITY_PARTS if ok(bullet_text))
+
+
+def quality_gaps(bullet_text: str) -> list[str]:
+    """Which quality components a bullet lacks, so tailoring can target them."""
+    if not bullet_text.split():
+        return [name for name, _, _ in QUALITY_PARTS]
+    return [name for name, _, ok in QUALITY_PARTS if not ok(bullet_text)]
 
 
 def score_resume(text: str, bullets: list[str], keywords: list[dict]) -> dict:

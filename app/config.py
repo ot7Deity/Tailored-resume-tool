@@ -20,6 +20,8 @@ TOOLS_DIR = ROOT / "tools"
 
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-5")
 CLAUDE_FALLBACKS = os.getenv("CLAUDE_FALLBACKS", "1") == "1"
+# Write the AI score explanation during tailoring (0 = on demand, saves one Claude call per run)
+AUTO_EXPLAIN = os.getenv("AUTO_EXPLAIN", "0") == "1"
 TECTONIC_PATH = os.getenv("TECTONIC_PATH", "").strip()
 TERM_LABEL = os.getenv("TERM_LABEL", "Spring2028")
 # Graduation dates offered on the tailor page; the choice sets the Education end date and the filename term

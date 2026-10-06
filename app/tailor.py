@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from . import config, llm
 from .latex_utils import escape_latex, latex_to_text, mask_comments
+from .scorer import bullet_quality, quality_gaps
 from .tex_parser import ParsedResume
 
 
@@ -78,7 +79,8 @@ How the score works: 60% keyword coverage (JD keywords found anywhere in the res
 Rules:
 1. Budget: return AT MOST {max_edits} bullet edits, and the words changed in bullets must stay under {max_change:.0%} of the resume (skills additions do not count toward this). Use that budget fully and spread the JD keywords across as many bullets as possible rather than piling them into one. Prefer bullets that are relevant to the job, miss its keywords, or lack a metric or action verb. Small, targeted rewordings that slot in 1-3 keywords each are better than full rewrites.
 2. Keep each original bullet's project, employer and core facts, and keep as much of its wording as you can. You may widen its scope: larger scale, more ownership, more of the stack touched. Work the missing JD keywords into bullets wherever that project could plausibly have involved them, including technologies the candidate does not list yet, and use the exact JD wording for each keyword.
-3. Every rewritten bullet follows the Google XYZ formula: "Accomplished [X] as measured by [Y], by doing [Z]". Start with a strong past-tense action verb, include a concrete measurable result (%, $, time saved, users, scale, latency, etc.) and use an XYZ connector.
+3. Every rewritten bullet follows the Google XYZ formula: "Accomplished [X] as measured by [Y], by doing [Z]". Start with a strong past-tense action verb, include a concrete measurable result (%, $, time saved, users, scale, latency, etc.) and use an XYZ connector. Bullets tagged [weak: ...] are missing exactly those scored parts - prefer them, since one edit then closes a keyword gap and a quality gap at once. Never return a bullet that drops a part the original already had; that lowers the score and the edit will be rejected.
+3b. Never fabricate credentials. Do not add or imply degrees, majors, fields of study, universities, certifications, employers, job titles, graduation dates or clearances the resume does not already state. Widening the scope of real work (rule 2) is fine; these are verifiable records and are not. Skip JD keywords of that kind even when marked must-have.
 4. Metrics: reuse the original numbers when they exist. When there are none, invent a realistic, specific metric the candidate could credibly defend in an interview, then set metric_estimated=true and list each invented figure in estimated_metrics.
 5. Length: keep the resume on one page. A rewritten bullet may be at most about 25% longer than the original. One sentence, with no trailing period if the original has none.
 6. new_text is plain text (no LaTeX). You may wrap a short phrase in **double asterisks** for bold only if the original bullet used bold.
@@ -107,11 +109,16 @@ def max_edits_for(parsed: ParsedResume) -> int:
     return max(1, math.ceil(len(parsed.bullets) * config.MAX_BULLET_RATIO))
 
 
+def _weak_tag(text: str) -> str:
+    gaps = quality_gaps(text)
+    return f" [weak: missing {', '.join(gaps)}]" if gaps else ""
+
+
 def plan_tailoring(parsed: ParsedResume, jd: str, analysis: JDAnalysis, missing: list[str],
                    feedback: str = "") -> TailorPlan:
     """`feedback` describes a previous attempt (its edits, score and remaining gaps) for a refinement round."""
     max_edits = max_edits_for(parsed)
-    bullets = "\n".join(f"[{b.id}] ({b.section}) {b.text}" for b in parsed.bullets)
+    bullets = "\n".join(f"[{b.id}] ({b.section}){_weak_tag(b.text)} {b.text}" for b in parsed.bullets)
     skills = "\n".join(f"[{s.id}] {s.label}: {s.text}" for s in parsed.skills) or "(no skills section found)"
     keywords = "\n".join(f"- {k.term} (importance {k.importance}, {k.category})" for k in analysis.keywords)
     user = f"""<job_description>
@@ -239,7 +246,10 @@ def enforce_budget(parsed: ParsedResume, plan: TailorPlan) -> tuple[list[dict], 
         seen.add(e.bullet_id)
         item = e.model_dump()
         item.update(original_text=b.text, section=b.section, new_text=text, accepted=True, dropped_reason=None)
-        if len(kept_texts) >= max_edits:
+        if bullet_quality(text) < bullet_quality(b.text):
+            lost = sorted(set(quality_gaps(text)) - set(quality_gaps(b.text)))
+            item.update(accepted=False, dropped_reason=f"Would drop the bullet's {', '.join(lost)}")
+        elif len(kept_texts) >= max_edits:
             item.update(accepted=False, dropped_reason=f"Over the {max_edits}-bullet change limit")
         else:
             trial = {**kept_texts, e.bullet_id: text}
