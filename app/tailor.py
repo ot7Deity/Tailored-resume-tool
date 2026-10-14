@@ -264,6 +264,14 @@ def enforce_budget(parsed: ParsedResume, plan: TailorPlan) -> tuple[list[dict], 
 
 # ---------- splicing ----------
 
+def skills_default_text(s: dict) -> str:
+    """The keyword list a skills line gets from tailoring alone, before any hand-editing."""
+    base = (s.get("original_text") or "").strip()
+    if not s.get("accepted") or not s.get("add_keywords"):
+        return base
+    return ", ".join([base, *s["add_keywords"]]) if base else ", ".join(s["add_keywords"])
+
+
 def build_tex(parsed: ParsedResume, edits: list[dict], skills: list[dict]) -> str:
     """Replace only the accepted spans; everything else stays byte-identical."""
     replacements: list[tuple[int, int, str]] = []
@@ -274,10 +282,15 @@ def build_tex(parsed: ParsedResume, edits: list[dict], skills: list[dict]) -> st
         if b:
             replacements.append((b.start, b.end, escape_latex(e["new_text"])))
     for s in skills:
-        if not s.get("accepted") or not s.get("add_keywords"):
-            continue
         line = parsed.skill(s["line_id"])
-        if line:
+        if not line:
+            continue
+        final = (s.get("final_text") or "").strip()
+        if final:
+            # The user curated the whole list, so the line is rewritten rather than appended to.
+            if final != line.text:
+                replacements.append((line.start, line.end, escape_latex(final)))
+        elif s.get("accepted") and s.get("add_keywords"):
             addition = ", " + ", ".join(escape_latex(k) for k in s["add_keywords"])
             replacements.append((line.end, line.end, addition))
 

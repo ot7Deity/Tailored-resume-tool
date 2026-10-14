@@ -60,6 +60,38 @@ def test_splice_only_touches_edited_spans(parsed):
     assert parse_resume(out).bullets[2].text == "Built 50% faster R&D pipeline in C#"
 
 
+def test_skills_final_text_replaces_the_whole_list(parsed):
+    """A hand-curated list rewrites the line, so a keyword can be dropped individually."""
+    line = parsed.skill("s3")
+    s = {"line_id": "s3", "original_text": line.text, "add_keywords": ["Kubernetes", "VLSI Design"],
+         "accepted": True}
+    # default: both added
+    assert "Kubernetes, VLSI Design}" in tailor.build_tex(parsed, [], [s])
+    # user drops VLSI Design only, keeping the other addition
+    kept = tailor.skills_default_text(s).replace(", VLSI Design", "")
+    line_text = lambda tex: parse_resume(tex).skill("s3").text
+    assert line_text(tailor.build_tex(parsed, [], [{**s, "final_text": kept}])) == kept
+    assert "VLSI Design" not in line_text(tailor.build_tex(parsed, [], [{**s, "final_text": kept}]))
+    # removing an ORIGINAL skill works too, which appending never allowed
+    out = tailor.build_tex(parsed, [], [{**s, "final_text": "Git, Kubernetes"}])
+    assert line_text(out) == "Git, Kubernetes"
+    assert "Docker" not in line_text(out)
+
+
+def test_skills_final_text_matching_the_original_is_a_no_op(parsed):
+    line = parsed.skill("s3")
+    s = {"line_id": "s3", "original_text": line.text, "add_keywords": [], "accepted": True,
+         "final_text": line.text}
+    assert tailor.build_tex(parsed, [], [s]) == SAMPLE
+
+
+def test_skills_without_final_text_keep_appending(parsed):
+    """Runs saved before per-keyword editing existed must behave exactly as before."""
+    legacy = {"line_id": "s3", "original_text": parsed.skill("s3").text,
+              "add_keywords": ["Kubernetes"], "accepted": True}
+    assert tailor.build_tex(parsed, [], [legacy]) == SAMPLE.replace("Eclipse}", "Eclipse, Kubernetes}")
+
+
 def test_skills_addition_appends(parsed):
     skills = [{"line_id": "s3", "add_keywords": ["Kubernetes"], "accepted": True}]
     out = tailor.build_tex(parsed, [], skills)

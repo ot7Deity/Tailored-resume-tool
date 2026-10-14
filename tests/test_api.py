@@ -87,6 +87,49 @@ def test_grad_date_choice(client, tmp_path):
     assert client.post("/api/tailor", json={"jd": JD, "grad_date": "June 2031"}).status_code == 400
 
 
+def test_user_can_edit_untouched_bullets_and_drop_single_keywords(client):
+    """Anything in the resume is editable after tailoring, keyword by keyword."""
+    client.put("/api/master", json={"tex": SAMPLE})
+    run = client.post("/api/tailor", json={"jd": "Python and Kubernetes engineer. " * 6}).json()
+    rid = run["run_id"]
+    assert run["all_bullets"] and run["all_skills"], "preview needs the full inventory"
+
+    tailored = set(e["bullet_id"] for e in run["edits"])
+    untouched = next(b for b in run["all_bullets"] if b["id"] not in tailored)
+    line = run["all_skills"][0]
+    keep = ", ".join(line["text"].split(", ")[:-1])  # drop exactly one keyword
+
+    out = client.post(f"/api/runs/{rid}/apply", json={
+        "edits": [{"bullet_id": untouched["id"], "accepted": True,
+                   "new_text": "Rewrote the pipeline by hand, cutting runtime 40%"}],
+        "skills": [{"line_id": line["id"], "accepted": True, "final_text": keep}],
+    }).json()
+
+    mine = next(e for e in out["edits"] if e["bullet_id"] == untouched["id"])
+    assert mine["user_edited"] is True and mine["accepted"] is True
+    assert mine["reason"] == "Edited by you"
+    edited = next(s for s in out["skills_edits"] if s["line_id"] == line["id"])
+    assert edited["final_text"] == keep
+    assert out["compile"]["ok"] is True
+
+
+def test_unchanged_text_is_never_spliced(client, tmp_path):
+    """Submitting a bullet/skills line unchanged must leave the .tex byte-identical."""
+    client.put("/api/master", json={"tex": SAMPLE})
+    run = client.post("/api/tailor", json={"jd": "Python and Kubernetes engineer. " * 6}).json()
+    rid = run["run_id"]
+    untouched = [b for b in run["all_bullets"] if b["id"] not in {e["bullet_id"] for e in run["edits"]}]
+    before = (tmp_path / "runs" / rid / "tailored.tex").read_text(encoding="utf-8")
+
+    out = client.post(f"/api/runs/{rid}/apply", json={
+        "edits": [{"bullet_id": b["id"], "accepted": True, "new_text": b["text"]} for b in untouched],
+        "skills": [{"line_id": s["id"], "accepted": True, "final_text": s["text"]} for s in run["all_skills"]],
+    }).json()
+    assert (tmp_path / "runs" / rid / "tailored.tex").read_text(encoding="utf-8") == before
+    assert not any(e.get("user_edited") for e in out["edits"] if e["bullet_id"] in
+                   {b["id"] for b in untouched})
+
+
 def test_jd_analysis_is_cached_across_runs(client, monkeypatch):
     """A second run on the same JD reuses the stored analysis instead of calling Claude again."""
     client.put("/api/master", json={"tex": SAMPLE})

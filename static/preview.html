@@ -47,6 +47,7 @@
     <div class="meter" id="meter" style="margin:10px 0 16px"><span></span></div>
     <div id="changes"></div>
     <div id="skills-changes"></div>
+    <div id="other-bullets"></div>
   </div>
 
   <!-- PDF -->
@@ -151,15 +152,9 @@ function render() {
       <div class="meta">Keywords: ${e.keywords_added.map(k => `<mark class="kw">${esc(k)}</mark>`).join(" ") || "—"} · ${esc(e.reason)}</div>
     </div>`).join("") || `<p class="muted">No bullet changes were suggested — your master already matches well.</p>`;
 
-  $("#skills-changes").innerHTML = run.skills_edits.length ? `<h2 class="small" style="margin-top:16px">Skills additions</h2>` +
-    run.skills_edits.map((s, i) => `
-    <div class="change ${s.accepted ? "" : "rejected"}" data-s="${i}">
-      <div class="row" style="justify-content:space-between">
-        <span><b>${esc(s.label)}:</b> ${esc(s.original_text)}, ${s.add_keywords.map(k => `<mark class="kw">${esc(k)}</mark>`).join(", ")}</span>
-        <label class="switch"><input type="checkbox" class="accept-skill" ${s.accepted ? "checked" : ""}> Add these</label>
-      </div>
-      <div class="meta"><span class="pill warn">⚠ Added: be ready to talk about these</span> ${esc(s.reason)}</div>
-    </div>`).join("") : "";
+  initSkillState();
+  renderSkills();
+  renderOtherBullets();
 
   // pdf
   const c = run.compile;
@@ -189,6 +184,105 @@ function titleIfLower(v) {
   return v === v.toLowerCase() ? v.replace(/\b[a-z]/g, c => c.toUpperCase()) : v;
 }
 
+// ---- skills: every line is editable keyword-by-keyword ----
+// skillState[line_id] = { label, added:Set, words:[] }  — `words` is the live list.
+let skillState = {};
+
+function initSkillState() {
+  skillState = {};
+  for (const line of run.all_skills || []) {
+    const edit = (run.skills_edits || []).find(s => s.line_id === line.id);
+    const text = edit ? (edit.final_text || defaultSkillText(edit)) : line.text;
+    skillState[line.id] = {
+      label: line.label,
+      added: new Set((edit && !edit.final_text ? edit.add_keywords : (edit ? edit.add_keywords : [])) || []),
+      words: splitKw(text),
+      reason: edit ? edit.reason : "",
+    };
+  }
+}
+
+function defaultSkillText(s) {
+  if (!s.accepted || !(s.add_keywords || []).length) return s.original_text || "";
+  return [s.original_text, ...s.add_keywords].filter(Boolean).join(", ");
+}
+
+const splitKw = t => String(t || "").split(",").map(x => x.trim()).filter(Boolean);
+
+function renderSkills() {
+  const lines = run.all_skills || [];
+  if (!lines.length) { $("#skills-changes").innerHTML = ""; return; }
+  $("#skills-changes").innerHTML = `<h2 class="small" style="margin-top:16px">Skills lines — click × to drop a keyword</h2>` +
+    lines.map(line => {
+      const st = skillState[line.id];
+      const chips = st.words.map((w, wi) => {
+        const isNew = [...st.added].some(a => a.toLowerCase() === w.toLowerCase());
+        return `<span class="chip ${isNew ? "chip-new" : ""}" data-line="${line.id}" data-wi="${wi}"
+          title="${isNew ? "Added by tailoring" : "Already on your resume"}">${esc(w)}<button class="chip-x"
+          data-line="${line.id}" data-wi="${wi}" title="Remove">×</button></span>`;
+      }).join("");
+      const nAdded = st.words.filter(w => [...st.added].some(a => a.toLowerCase() === w.toLowerCase())).length;
+      return `<div class="change" data-skill="${line.id}">
+        <div class="row" style="justify-content:space-between;margin-bottom:6px">
+          <b>${esc(st.label)}</b>
+          <span class="small muted">${st.words.length} keyword(s)${nAdded ? ` · ${nAdded} added by tailoring` : ""}</span>
+        </div>
+        <div class="chips">${chips || '<span class="muted small">(empty)</span>'}</div>
+        <div class="row" style="margin-top:8px;gap:6px">
+          <input class="kw-add" data-line="${line.id}" type="text" placeholder="Add a keyword and press Enter" style="flex:1">
+          <button class="small kw-reset" data-line="${line.id}">Reset line</button>
+        </div>
+        ${nAdded ? `<div class="meta"><span class="pill warn">⚠ Highlighted keywords were added — be ready to talk about them</span> ${esc(st.reason || "")}</div>` : ""}
+      </div>`;
+    }).join("");
+}
+
+// ---- bullets tailoring did not touch ----
+function renderOtherBullets() {
+  const edited = new Set((run.edits || []).map(e => e.bullet_id));
+  const rest = (run.all_bullets || []).filter(b => !edited.has(b.id));
+  if (!rest.length) { $("#other-bullets").innerHTML = ""; return; }
+  $("#other-bullets").innerHTML =
+    `<h2 class="small" style="margin-top:16px">Other bullets (${rest.length}) — edit any of these too</h2>
+     <p class="small muted" style="margin:0 0 8px">Tailoring left these alone. Anything you don't change stays byte-for-byte identical.</p>` +
+    rest.map(b => `
+      <div class="change" data-other="${b.id}">
+        <div class="row" style="gap:6px;margin-bottom:6px">
+          <span class="tag">${b.id}</span><span class="pill info">${esc(b.section)}</span>
+        </div>
+        <textarea class="other-new" data-id="${b.id}" data-orig="${esc(b.text)}">${esc(b.text)}</textarea>
+      </div>`).join("");
+}
+
+document.addEventListener("click", (ev) => {
+  const x = ev.target.closest(".chip-x");
+  if (x) {
+    const st = skillState[x.dataset.line];
+    st.words.splice(Number(x.dataset.wi), 1);
+    renderSkills(); setDirty(true); return;
+  }
+  const r = ev.target.closest(".kw-reset");
+  if (r) {
+    const line = (run.all_skills || []).find(l => l.id === r.dataset.line);
+    const edit = (run.skills_edits || []).find(s => s.line_id === r.dataset.line);
+    skillState[r.dataset.line].words = splitKw(edit ? defaultSkillText(edit) : line.text);
+    renderSkills(); setDirty(true);
+  }
+});
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter" || !ev.target.matches(".kw-add")) return;
+  ev.preventDefault();
+  const v = ev.target.value.trim();
+  if (!v) return;
+  const st = skillState[ev.target.dataset.line];
+  for (const w of splitKw(v)) {
+    if (!st.words.some(x => x.toLowerCase() === w.toLowerCase())) st.words.push(w);
+  }
+  ev.target.value = "";
+  renderSkills(); setDirty(true);
+});
+
 function setDirty(v) {
   dirty = v;
   $("#apply").classList.toggle("primary", v);
@@ -196,7 +290,7 @@ function setDirty(v) {
 }
 
 document.addEventListener("input", (ev) => {
-  if (ev.target.matches(".new, .accept, .accept-skill, #company, #grad, #filename")) setDirty(true);
+  if (ev.target.matches(".new, .other-new, .accept, .accept-skill, #company, #grad, #filename")) setDirty(true);
   if (ev.target.matches(".accept, .accept-skill")) ev.target.closest(".change").classList.toggle("rejected", !ev.target.checked);
   if (ev.target.id === "grad" && run && termFor(ev.target.value)) {
     $("#filename").value = $("#filename").value.replace(/_[A-Za-z]+\d{4}\.pdf$/i, `_${termFor(ev.target.value)}.pdf`);
@@ -210,8 +304,14 @@ async function applyChanges() {
   const btn = $("#apply"); btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Recompiling…';
   const edits = [...document.querySelectorAll("[data-i]")].map(el => ({
     bullet_id: run.edits[el.dataset.i].bullet_id, accepted: $(".accept", el).checked, new_text: $(".new", el).value }));
-  const skills = [...document.querySelectorAll("[data-s]")].map(el => ({
-    line_id: run.skills_edits[el.dataset.s].line_id, accepted: $(".accept-skill", el).checked }));
+  // bullets tailoring never touched: send only the ones actually changed
+  for (const ta of document.querySelectorAll(".other-new")) {
+    if (ta.value.trim() && ta.value.trim() !== ta.dataset.orig.trim()) {
+      edits.push({ bullet_id: ta.dataset.id, accepted: true, new_text: ta.value });
+    }
+  }
+  const skills = (run.all_skills || []).map(line => ({
+    line_id: line.id, accepted: true, final_text: skillState[line.id].words.join(", ") }));
   let ok = false;
   try {
     run = await api(`/api/runs/${runId}/apply`, { method: "POST",

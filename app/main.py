@@ -128,6 +128,7 @@ class EditToggle(BaseModel):
 class SkillToggle(BaseModel):
     line_id: str
     accepted: bool
+    final_text: str = ""  # the full keyword list, when the user has curated it by hand
 
 
 class ApplyIn(BaseModel):
@@ -179,8 +180,18 @@ def _load(run_id: str) -> dict:
 
 
 def _out(run: dict) -> dict:
-    """A run as sent to the preview page (with the graduation-date choices)."""
-    return run | {"grad_dates": config.GRAD_DATES}
+    """A run as sent to the preview page: the graduation-date choices, plus every bullet
+    and skills line from the run's own master snapshot so any of them can be hand-edited."""
+    out = run | {"grad_dates": config.GRAD_DATES}
+    try:
+        tex = storage.run_file(run["run_id"], "master.tex").read_text(encoding="utf-8")
+    except OSError:
+        return out
+    parsed = parse_resume(tex)
+    return out | {
+        "all_bullets": [{"id": b.id, "section": b.section, "text": b.text} for b in parsed.bullets],
+        "all_skills": [{"id": s.id, "label": s.label, "text": s.text} for s in parsed.skills],
+    }
 
 
 @app.get("/api/runs/{run_id}")

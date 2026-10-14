@@ -146,6 +146,46 @@ def run_tailor(jd: str, company_override: str = "", grad_date: str = "") -> dict
     return run
 
 
+def _add_user_edits(parsed: ParsedResume, run: dict, edits: list[dict]) -> None:
+    """Record hand-edits to bullets tailoring never proposed. A bullet left alone is
+    never spliced, so its span stays byte-identical."""
+    known = {e["bullet_id"] for e in run["edits"]}
+    for upd in edits:
+        bid = upd.get("bullet_id") or ""
+        if bid in known:
+            continue
+        b = parsed.bullet(bid)
+        text = (upd.get("new_text") or "").strip()
+        if not b or not text or text == b.text:
+            continue
+        known.add(bid)
+        run["edits"].append({
+            "bullet_id": bid, "original_text": b.text, "section": b.section, "new_text": text,
+            "accepted": bool(upd.get("accepted")), "dropped_reason": None, "user_edited": True,
+            "xyz": {"x_accomplished": "", "y_measured_by": "", "z_by_doing": ""},
+            "keywords_added": [], "metric_estimated": False, "estimated_metrics": [],
+            "reason": "Edited by you",
+        })
+
+
+def _add_user_skills(parsed: ParsedResume, run: dict, skills: list[dict]) -> None:
+    """Record hand-edits to skills lines tailoring never touched."""
+    known = {s["line_id"] for s in run["skills_edits"]}
+    for upd in skills:
+        lid = upd.get("line_id") or ""
+        if lid in known:
+            continue
+        line = parsed.skill(lid)
+        final = (upd.get("final_text") or "").strip()
+        if not line or not final or final == line.text:
+            continue
+        known.add(lid)
+        run["skills_edits"].append({
+            "line_id": lid, "label": line.label, "original_text": line.text, "add_keywords": [],
+            "reason": "Edited by you", "accepted": True, "final_text": final, "user_edited": True,
+        })
+
+
 def apply_changes(run_id: str, edits: list[dict], skills: list[dict], company: str | None,
                   filename: str | None, grad_date: str | None = None) -> dict:
     """Re-splice with the user's accept/reject toggles and text overrides. No new tailoring call."""
@@ -163,11 +203,21 @@ def apply_changes(run_id: str, edits: list[dict], skills: list[dict], company: s
         if text and text != e["new_text"]:
             e["new_text"] = text
             e["user_edited"] = True
+    _add_user_edits(parsed, run, edits)
+
     s_by_id = {s["line_id"]: s for s in skills}
     for s in run["skills_edits"]:
         upd = s_by_id.get(s["line_id"])
-        if upd is not None:
-            s["accepted"] = bool(upd.get("accepted"))
+        if upd is None:
+            continue
+        s["accepted"] = bool(upd.get("accepted"))
+        final = (upd.get("final_text") or "").strip()
+        if final and final != tailor.skills_default_text(s):
+            s["final_text"] = final
+            s["user_edited"] = True
+        elif final:
+            s.pop("final_text", None)  # back to exactly what tailoring proposed
+    _add_user_skills(parsed, run, skills)
 
     if company is not None and company.strip():
         run["company"] = company.strip()

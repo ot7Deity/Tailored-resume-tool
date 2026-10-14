@@ -84,3 +84,12 @@ mark.kw { background: #fff1b8; padding: 0 2px; border-radius: 3px; }
   font-size: 22px; font-weight: 700; pointer-events: none; }
 .sticky-actions { position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--border);
   padding: 12px 20px; margin: 0 -24px -24px; display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+
+/* editable keyword chips on the preview page */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px 3px 9px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--surface); font-size: 13px; }
+.chip-new { border-color: var(--accent); background: rgba(47, 91, 234, .08); font-weight: 600; }
+.chip-x { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 15px;
+  line-height: 1; padding: 0 2px; border-radius: 999px; }
+.chip-x:hover { color: #fff; background: var(--bad, #c0392b); }
